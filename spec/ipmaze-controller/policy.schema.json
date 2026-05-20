@@ -1,0 +1,306 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://schema.justin.directory/ipmaze-controller/1.0/policy.schema.json",
+    "title": "CIDRPolicy Custom Resource",
+    "description": "Schema for the CIDRPolicy custom resource defined by the ipmaze controller specification.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+    ],
+    "properties": {
+        "apiVersion": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Kubernetes API version for the custom resource."
+        },
+        "kind": {
+            "const": "CIDRPolicy",
+            "description": "Kubernetes kind for this custom resource."
+        },
+        "metadata": {
+            "$ref": "#/$defs/objectMeta"
+        },
+        "spec": {
+            "$ref": "#/$defs/spec"
+        },
+        "status": {
+            "$ref": "#/$defs/status"
+        }
+    },
+    "$defs": {
+        "objectMeta": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+                "name",
+                "namespace"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253
+                },
+                "namespace": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63
+                },
+                "labels": {
+                    "$ref": "#/$defs/stringMap"
+                },
+                "annotations": {
+                    "$ref": "#/$defs/stringMap"
+                }
+            }
+        },
+        "spec": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "source",
+                "target",
+                "rules"
+            ],
+            "properties": {
+                "source": {
+                    "$ref": "#/$defs/source"
+                },
+                "target": {
+                    "$ref": "#/$defs/target"
+                },
+                "rules": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/$defs/rule"
+                    }
+                }
+            }
+        },
+        "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "address",
+                "jmesPath"
+            ],
+            "properties": {
+                "address": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Remote source address. Implementations may accept an HTTP(S) URL or a bare DNS/IP address. Bare DNS names MUST be retrieved as HTTPS URLs and bare IP addresses MUST be retrieved as HTTP URLs.",
+                    "oneOf": [
+                        {
+                            "format": "hostname"
+                        },
+                        {
+                            "format": "ipv4"
+                        },
+                        {
+                            "format": "ipv6"
+                        },
+                        {
+                            "type": "string",
+                            "pattern": "^https?://"
+                        }
+                    ]
+                },
+                "jmesPath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "JMESPath expression evaluated against the fetched JSON payload."
+                }
+            }
+        },
+        "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "podSelector"
+            ],
+            "properties": {
+                "podSelector": {
+                    "$ref": "#/$defs/labelSelector"
+                }
+            }
+        },
+        "rule": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "directions": {
+                    "type": "array",
+                    "description": "If omitted, implementations should apply the rule to both ingress and egress.",
+                    "items": {
+                        "$ref": "#/$defs/direction"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                },
+                "podSelector": {
+                    "$ref": "#/$defs/labelSelector"
+                },
+                "namespaceSelector": {
+                    "$ref": "#/$defs/labelSelector"
+                }
+            },
+            "anyOf": [
+                {
+                    "required": [
+                        "podSelector"
+                    ]
+                },
+                {
+                    "required": [
+                        "namespaceSelector"
+                    ]
+                }
+            ]
+        },
+        "status": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "lastSuccessfulResolutionTime": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "lastObservedCidrs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/cidr"
+                    },
+                    "uniqueItems": true
+                },
+                "lastReconciliationError": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                }
+            }
+        },
+        "labelSelector": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "matchLabels": {
+                    "$ref": "#/$defs/stringMap"
+                },
+                "matchExpressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/labelSelectorRequirement"
+                    }
+                }
+            }
+        },
+        "labelSelectorRequirement": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "key",
+                "operator"
+            ],
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "operator": {
+                    "type": "string",
+                    "enum": [
+                        "In",
+                        "NotIn",
+                        "Exists",
+                        "DoesNotExist"
+                    ]
+                },
+                "values": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "operator": {
+                                "enum": [
+                                    "In",
+                                    "NotIn"
+                                ]
+                            }
+                        },
+                        "required": [
+                            "operator"
+                        ]
+                    },
+                    "then": {
+                        "required": [
+                            "values"
+                        ],
+                        "properties": {
+                            "values": {
+                                "minItems": 1
+                            }
+                        }
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "operator": {
+                                "enum": [
+                                    "Exists",
+                                    "DoesNotExist"
+                                ]
+                            }
+                        },
+                        "required": [
+                            "operator"
+                        ]
+                    },
+                    "then": {
+                        "not": {
+                            "required": [
+                                "values"
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        "stringMap": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "direction": {
+            "type": "string",
+            "enum": [
+                "ingress",
+                "egress"
+            ]
+        },
+        "cidr": {
+            "type": "string",
+            "oneOf": [
+                {
+                    "pattern": "^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}/(?:3[0-2]|[12]?[0-9])$"
+                },
+                {
+                    "pattern": "^[0-9A-Fa-f:.]+/(?:12[0-8]|1[01][0-9]|[1-9]?[0-9])$"
+                }
+            ]
+        }
+    }
+}

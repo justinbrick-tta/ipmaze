@@ -1,0 +1,9 @@
+{
+    "servers": {
+        "specman": {
+            "command": "specman-mcp",
+            "cwd": "${workspaceFolder}",
+            "type": "stdio"
+        }
+    }
+}
