@@ -222,10 +222,7 @@ fn schedule_requeue_after(schedule: &Schedule) -> Result<Duration, ReconcileErro
     next_resync_after(schedule, Utc::now()).map_err(ReconcileError::Scheduling)
 }
 
-pub fn next_resync_after(
-    schedule: &Schedule,
-    now: DateTime<Utc>,
-) -> Result<Duration, String> {
+pub fn next_resync_after(schedule: &Schedule, now: DateTime<Utc>) -> Result<Duration, String> {
     let next = schedule
         .after(&now)
         .next()
@@ -513,7 +510,10 @@ mod tests {
     #[test]
     fn next_resync_after_returns_non_zero_delay_for_minutely_schedule() {
         let schedule = validate_resync_schedule(Some("* * * * *")).unwrap();
-        let now = Utc.with_ymd_and_hms(2026, 5, 22, 12, 34, 30).single().unwrap();
+        let now = Utc
+            .with_ymd_and_hms(2026, 5, 22, 12, 34, 30)
+            .single()
+            .unwrap();
 
         let delay = next_resync_after(&schedule, now).unwrap();
 

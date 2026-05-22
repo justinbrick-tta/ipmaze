@@ -225,7 +225,10 @@ mod tests {
             "https://example.invalid/"
         );
         assert!(validated.pointer_regex.is_none());
-        assert_eq!(validated.resync_schedule.to_string(), format!("0 {DEFAULT_RESYNC_SCHEDULE}"));
+        assert_eq!(
+            validated.resync_schedule.to_string(),
+            format!("0 {DEFAULT_RESYNC_SCHEDULE}")
+        );
     }
 
     #[test]

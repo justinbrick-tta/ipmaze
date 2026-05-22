@@ -1,8 +1,8 @@
 use chrono::TimeZone;
 use http::{Request, Response, StatusCode};
 use ipmaze_controller::api::{
-    CIDRPolicy, CIDRPolicySpec, CIDRPolicyStatus, Direction, LabelSelector, PointerSpec,
-    RuleSpec, SourceSpec, StringMap, TargetSpec,
+    CIDRPolicy, CIDRPolicySpec, CIDRPolicyStatus, Direction, LabelSelector, PointerSpec, RuleSpec,
+    SourceSpec, StringMap, TargetSpec,
 };
 use ipmaze_controller::build_http_client;
 use ipmaze_controller::controller::{
@@ -83,10 +83,10 @@ async fn reconcile_resolves_pointer_source_and_updates_policy() {
     let remote = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/pointer.txt"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-            "endpoint={}/allowlist.json",
-            remote.uri()
-        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!("endpoint={}/allowlist.json", remote.uri())),
+        )
         .mount(&remote)
         .await;
     Mock::given(method("GET"))
@@ -114,7 +114,10 @@ async fn reconcile_resolves_pointer_source_and_updates_policy() {
     let state = state.lock().unwrap();
     let managed = state
         .network_policies
-        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .get(&(
+            policy.namespace().unwrap(),
+            policy.managed_network_policy_name(),
+        ))
         .unwrap();
     assert_eq!(rendered_ipblocks(managed), vec!["203.0.113.0/24"]);
 }
@@ -124,10 +127,10 @@ async fn pointer_extraction_failure_preserves_last_good_policy_and_records_stage
     let remote = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/pointer.txt"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-            "endpoint={}/allowlist.json",
-            remote.uri()
-        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!("endpoint={}/allowlist.json", remote.uri())),
+        )
         .mount(&remote)
         .await;
     Mock::given(method("GET"))
@@ -156,7 +159,10 @@ async fn pointer_extraction_failure_preserves_last_good_policy_and_records_stage
         .lock()
         .unwrap()
         .network_policies
-        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .get(&(
+            policy.namespace().unwrap(),
+            policy.managed_network_policy_name(),
+        ))
         .cloned()
         .unwrap();
 
@@ -177,7 +183,10 @@ async fn pointer_extraction_failure_preserves_last_good_policy_and_records_stage
     let state = state.lock().unwrap();
     let after_failure = state
         .network_policies
-        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .get(&(
+            policy.namespace().unwrap(),
+            policy.managed_network_policy_name(),
+        ))
         .unwrap();
     assert_eq!(after_failure.spec, before_failure.spec);
     assert!(state
@@ -419,7 +428,10 @@ async fn reconcile_fails_on_foreign_network_policy_name_collision() {
 
     let error = reconcile(Arc::new(policy.clone()), ctx).await.unwrap_err();
 
-    assert_eq!(error.stage(), ipmaze_controller::status::ReconcileStage::ManagedPolicyCollision);
+    assert_eq!(
+        error.stage(),
+        ipmaze_controller::status::ReconcileStage::ManagedPolicyCollision
+    );
     let state = state.lock().unwrap();
     assert_eq!(state.netpol_patch_count, 0);
     assert_eq!(state.netpol_delete_count, 0);
@@ -456,7 +468,10 @@ async fn cleanup_fails_on_foreign_network_policy_name_collision() {
 
     let error = reconcile(Arc::new(policy.clone()), ctx).await.unwrap_err();
 
-    assert_eq!(error.stage(), ipmaze_controller::status::ReconcileStage::ManagedPolicyCollision);
+    assert_eq!(
+        error.stage(),
+        ipmaze_controller::status::ReconcileStage::ManagedPolicyCollision
+    );
     let state = state.lock().unwrap();
     assert_eq!(state.netpol_delete_count, 0);
     assert_eq!(event_reasons(&state), vec!["ManagedPolicyCollision"]);

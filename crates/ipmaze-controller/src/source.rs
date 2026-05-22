@@ -126,8 +126,8 @@ pub async fn resolve_final_source(
         .map(|capture| capture.as_str().trim())
         .filter(|capture| !capture.is_empty())
         .ok_or(FetchError::PointerExtractionEmptyCapture)?;
-    let final_address = normalize_source_address(resolved)
-        .map_err(FetchError::PointerResolvedAddress)?;
+    let final_address =
+        normalize_source_address(resolved).map_err(FetchError::PointerResolvedAddress)?;
 
     Ok(ResolvedSource {
         base_address: base_address.clone(),
@@ -243,14 +243,17 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/pointer.txt"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                "window.endpoint='example.invalid'; fallback='ignored.invalid';",
-            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    "window.endpoint='example.invalid'; fallback='ignored.invalid';",
+                ),
+            )
             .mount(&server)
             .await;
 
         let client = build_http_client().unwrap();
-        let base_address = normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
+        let base_address =
+            normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
         let regex = Regex::new("endpoint='([^']+)'").unwrap();
 
         let resolved = resolve_final_source(&client, &base_address, Some(&regex))
@@ -259,7 +262,10 @@ mod tests {
 
         assert!(resolved.pointer_used);
         assert_eq!(resolved.final_address.original, "example.invalid");
-        assert_eq!(resolved.final_address.request_url.as_str(), "https://example.invalid/");
+        assert_eq!(
+            resolved.final_address.request_url.as_str(),
+            "https://example.invalid/"
+        );
     }
 
     #[tokio::test]
@@ -272,7 +278,8 @@ mod tests {
             .await;
 
         let client = build_http_client().unwrap();
-        let base_address = normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
+        let base_address =
+            normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
         let regex = Regex::new("endpoint='([^']+)'").unwrap();
 
         let err = resolve_final_source(&client, &base_address, Some(&regex))
@@ -292,7 +299,8 @@ mod tests {
             .await;
 
         let client = build_http_client().unwrap();
-        let base_address = normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
+        let base_address =
+            normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
         let regex = Regex::new("endpoint='([^']*)'").unwrap();
 
         let err = resolve_final_source(&client, &base_address, Some(&regex))

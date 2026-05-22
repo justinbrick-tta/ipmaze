@@ -26,7 +26,7 @@ pub use source::{
 };
 pub use status::{patch_status_for_outcome, status_for_outcome, ReconcileOutcome, ReconcileStage};
 pub use validation::{
-    validate_policy, validate_pointer_regex, validate_resync_schedule, validate_spec,
+    validate_pointer_regex, validate_policy, validate_resync_schedule, validate_spec,
     ValidatedPolicy, ValidationError, DEFAULT_RESYNC_SCHEDULE,
 };
 
