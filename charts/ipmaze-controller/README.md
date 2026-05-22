@@ -1,5 +1,23 @@
 # ipmaze-controller Helm Chart
 
+Install the published OCI chart without cloning the repository:
+
+```sh
+helm install ipmaze-controller oci://ghcr.io/justinbrick-tta/charts/ipmaze-controller \
+	--version 0.1.0 \
+	--namespace ipmaze-system \
+	--create-namespace
+```
+
+Upgrade an existing installation from the published OCI chart:
+
+```sh
+helm upgrade --install ipmaze-controller oci://ghcr.io/justinbrick-tta/charts/ipmaze-controller \
+	--version 0.1.0 \
+	--namespace ipmaze-system \
+	--create-namespace
+```
+
 Install the chart into the controller namespace:
 
 ```sh
