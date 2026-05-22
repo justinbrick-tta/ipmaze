@@ -389,6 +389,79 @@ async fn no_change_reconcile_avoids_network_policy_write() {
     assert!(state.events.is_empty());
 }
 
+#[tokio::test]
+async fn reconcile_fails_on_foreign_network_policy_name_collision() {
+    let remote = json_server(json!({ "prefixes": ["10.0.0.0/24"] })).await;
+    let policy = sample_policy(&format!("{}/allowlist.json", remote.uri()));
+    let mut foreign_policy = build_managed_network_policy(
+        &policy,
+        &[NormalizedCidr {
+            rendered: "192.0.2.0/24".to_owned(),
+            family: IpFamily::V4,
+        }],
+    )
+    .unwrap();
+    foreign_policy.metadata.owner_references = None;
+    foreign_policy.metadata.annotations = Some(BTreeMap::new());
+    let state = Arc::new(Mutex::new(FakeKubeState::default()));
+    {
+        let mut state = state.lock().unwrap();
+        state.policies.insert(policy_key(&policy), policy.clone());
+        state.network_policies.insert(
+            (
+                policy.namespace().unwrap(),
+                policy.managed_network_policy_name(),
+            ),
+            foreign_policy,
+        );
+    }
+    let ctx = test_context(state.clone());
+
+    let error = reconcile(Arc::new(policy.clone()), ctx).await.unwrap_err();
+
+    assert_eq!(error.stage(), ipmaze_controller::status::ReconcileStage::ManagedPolicyCollision);
+    let state = state.lock().unwrap();
+    assert_eq!(state.netpol_patch_count, 0);
+    assert_eq!(state.netpol_delete_count, 0);
+    assert_eq!(event_reasons(&state), vec!["ManagedPolicyCollision"]);
+}
+
+#[tokio::test]
+async fn cleanup_fails_on_foreign_network_policy_name_collision() {
+    let remote = json_server(json!({ "prefixes": ["10.0.0.0/24"] })).await;
+    let mut policy = sample_policy(&format!("{}/allowlist.json", remote.uri()));
+    policy.metadata.deletion_timestamp = Some(Time(chrono::Utc::now()));
+    let mut foreign_policy = build_managed_network_policy(
+        &policy,
+        &[NormalizedCidr {
+            rendered: "192.0.2.0/24".to_owned(),
+            family: IpFamily::V4,
+        }],
+    )
+    .unwrap();
+    foreign_policy.metadata.labels = Some(BTreeMap::new());
+    let state = Arc::new(Mutex::new(FakeKubeState::default()));
+    {
+        let mut state = state.lock().unwrap();
+        state.policies.insert(policy_key(&policy), policy.clone());
+        state.network_policies.insert(
+            (
+                policy.namespace().unwrap(),
+                policy.managed_network_policy_name(),
+            ),
+            foreign_policy,
+        );
+    }
+    let ctx = test_context(state.clone());
+
+    let error = reconcile(Arc::new(policy.clone()), ctx).await.unwrap_err();
+
+    assert_eq!(error.stage(), ipmaze_controller::status::ReconcileStage::ManagedPolicyCollision);
+    let state = state.lock().unwrap();
+    assert_eq!(state.netpol_delete_count, 0);
+    assert_eq!(event_reasons(&state), vec!["ManagedPolicyCollision"]);
+}
+
 fn sample_policy(address: &str) -> CIDRPolicy {
     let mut policy = CIDRPolicy::new(
         "office-allowlist",

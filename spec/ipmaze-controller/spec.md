@@ -240,6 +240,11 @@ The Managed NetworkPolicy is the Kubernetes NetworkPolicy resource created or up
 - The managed NetworkPolicy MUST be identifiable as controller-managed.
 - The controller MUST set an ownership relationship or equivalent management marker that lets it distinguish managed resources from unrelated NetworkPolicy resources.
 - The controller MUST NOT modify unrelated user-managed NetworkPolicy resources.
+- If the deterministic managed NetworkPolicy name resolves to an existing NetworkPolicy that is not provably owned by the reconciling custom resource, the controller MUST treat that condition as a naming collision and MUST fail reconciliation without modifying the existing NetworkPolicy.
+- If the deterministic managed NetworkPolicy name resolves to an existing NetworkPolicy that is not provably owned by the reconciling custom resource, the controller MUST fail cleanup without deleting the existing NetworkPolicy.
+- Proof of ownership for a managed NetworkPolicy MUST include controller management metadata sufficient to distinguish the resource from unrelated NetworkPolicy objects created by users or other orchestration software.
+- When a naming collision is detected, the controller MUST emit a warning event for the custom resource and MUST write an operator-visible warning or error log entry describing the collision.
+- Implementations targeting a specific orchestration environment MUST treat collisions with that environment's reserved or implementation-defined managed NetworkPolicy naming conventions as reconciliation failures rather than attempting adoption by name alone.
 - When the custom resource is deleted, the controller SHOULD delete the managed NetworkPolicy if ownership semantics permit it.
 
 Example: if the resolved set changes from `["10.0.0.0/24"]` to `["10.0.0.0/24", "2001:db8::/32"]`, the controller updates the managed NetworkPolicy so both CIDR blocks are represented and no stale CIDR blocks remain.
@@ -252,6 +257,7 @@ The Reconciliation Outcome captures whether a single reconcile cycle succeeded, 
 
 - A successful reconcile MUST indicate that remote retrieval, query evaluation, CIDR validation, and managed NetworkPolicy reconciliation all completed without error.
 - A failed reconcile MUST identify the failed stage with enough detail for an operator to distinguish address errors, transport errors, pointer retrieval errors, pointer extraction errors, JSON parsing errors, JMESPath errors, CIDR validation errors, and Kubernetes API errors.
+- A failed reconcile MUST distinguish managed-resource naming collisions from ordinary Kubernetes API failures.
 - A no-change reconcile SHOULD avoid unnecessary writes to the Kubernetes API.
 
 !controller.reconciliation.pointer.failures:

@@ -1,7 +1,10 @@
 use crate::api::CIDRPolicy;
 use crate::extract::compile_query;
 use crate::extract::ExtractionError;
-use crate::netpol::{apply_managed_network_policy, build_managed_network_policy, RenderError};
+use crate::netpol::{
+    apply_managed_network_policy, build_managed_network_policy, is_managed_network_policy_for,
+    RenderError,
+};
 use crate::source::{build_http_client, fetch_json, resolve_final_source, FetchError};
 use crate::status::{patch_status_for_outcome, ReconcileOutcome, ReconcileStage};
 use crate::validation::{validate_policy, ValidationError};
@@ -39,6 +42,8 @@ pub struct ControllerContext {
 pub enum ReconcileError {
     #[error(transparent)]
     Validation(#[from] ValidationError),
+    #[error("managed NetworkPolicy collision for {0}")]
+    ManagedPolicyCollision(String),
     #[error(transparent)]
     Fetch(#[from] FetchError),
     #[error(transparent)]
@@ -58,6 +63,7 @@ impl ReconcileError {
                 ReconcileStage::JmesPathCompile
             }
             Self::Validation(_) => ReconcileStage::Validation,
+            Self::ManagedPolicyCollision(_) => ReconcileStage::ManagedPolicyCollision,
             Self::Fetch(FetchError::PointerRetrieval(_)) => ReconcileStage::PointerRetrieval,
             Self::Fetch(FetchError::PointerExtractionNoMatch)
             | Self::Fetch(FetchError::PointerExtractionEmptyCapture)
@@ -144,7 +150,7 @@ pub async fn reconcile(
     let namespace = policy.namespace().ok_or(RenderError::MissingNamespace)?;
     let policies_api: Api<CIDRPolicy> = Api::namespaced(ctx.client.clone(), &namespace);
     let netpol_api: Api<NetworkPolicy> = Api::namespaced(ctx.client.clone(), &namespace);
-    let existing = get_managed_network_policy(&netpol_api, &policy).await?;
+    let existing = get_managed_network_policy(&netpol_api, &policy, &ctx, "Reconcile").await?;
     let outcome = classify_outcome(existing.as_ref(), &rendered, observed_cidrs.clone());
 
     if matches!(outcome, ReconcileOutcome::Reconciled { .. }) {
@@ -164,7 +170,8 @@ pub async fn cleanup(
 ) -> Result<(), ReconcileError> {
     let namespace = policy.namespace().ok_or(RenderError::MissingNamespace)?;
     let netpol_api: Api<NetworkPolicy> = Api::namespaced(ctx.client.clone(), &namespace);
-    let deleted = delete_managed_network_policy(&netpol_api, &policy).await?;
+    let existing = get_managed_network_policy(&netpol_api, &policy, &ctx, "Cleanup").await?;
+    let deleted = delete_managed_network_policy(&netpol_api, &policy, existing.is_some()).await?;
     let note = if deleted {
         format!(
             "Deleted managed NetworkPolicy {} during CIDRPolicy cleanup",
@@ -269,9 +276,20 @@ pub async fn handle_reconcile_failure(
 async fn get_managed_network_policy(
     api: &Api<NetworkPolicy>,
     policy: &CIDRPolicy,
-) -> Result<Option<NetworkPolicy>, kube::Error> {
+    ctx: &ControllerContext,
+    action: &str,
+) -> Result<Option<NetworkPolicy>, ReconcileError> {
     match api.get_opt(&policy.managed_network_policy_name()).await? {
-        Some(network_policy) => Ok(Some(network_policy)),
+        Some(network_policy) => {
+            if is_managed_network_policy_for(policy, &network_policy) {
+                Ok(Some(network_policy))
+            } else {
+                report_managed_policy_collision(ctx, policy, &network_policy, action).await?;
+                Err(ReconcileError::ManagedPolicyCollision(
+                    policy.managed_network_policy_name(),
+                ))
+            }
+        }
         None => Ok(None),
     }
 }
@@ -279,7 +297,12 @@ async fn get_managed_network_policy(
 pub async fn delete_managed_network_policy(
     api: &Api<NetworkPolicy>,
     policy: &CIDRPolicy,
-) -> Result<bool, kube::Error> {
+    exists: bool,
+) -> Result<bool, ReconcileError> {
+    if !exists {
+        return Ok(false);
+    }
+
     match api
         .delete(
             &policy.managed_network_policy_name(),
@@ -289,8 +312,38 @@ pub async fn delete_managed_network_policy(
     {
         Ok(_) => Ok(true),
         Err(kube::Error::Api(error)) if error.code == 404 => Ok(false),
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     }
+}
+
+async fn report_managed_policy_collision(
+    ctx: &ControllerContext,
+    policy: &CIDRPolicy,
+    network_policy: &NetworkPolicy,
+    action: &str,
+) -> Result<(), kube::Error> {
+    error!(
+        policy = %policy.name_any(),
+        namespace = %policy.namespace().unwrap_or_default(),
+        network_policy = %policy.managed_network_policy_name(),
+        action,
+        "managed NetworkPolicy name collision detected"
+    );
+
+    publish_policy_event(
+        ctx,
+        policy,
+        EventType::Warning,
+        "ManagedPolicyCollision",
+        action,
+        Some(format!(
+            "Refusing to {action_lower} NetworkPolicy {} because an existing resource with that name is not owned by this CIDRPolicy",
+            policy.managed_network_policy_name(),
+            action_lower = action.to_lowercase(),
+        )),
+        Some(network_policy),
+    )
+    .await
 }
 
 fn classify_outcome(
@@ -449,6 +502,12 @@ mod tests {
     fn reconcile_error_maps_pointer_extraction_failures() {
         let error = ReconcileError::Fetch(FetchError::PointerExtractionNoMatch);
         assert_eq!(error.stage(), ReconcileStage::PointerExtraction);
+    }
+
+    #[test]
+    fn reconcile_error_maps_managed_policy_collisions() {
+        let error = ReconcileError::ManagedPolicyCollision("office-allowlist-managed".to_owned());
+        assert_eq!(error.stage(), ReconcileStage::ManagedPolicyCollision);
     }
 
     #[test]
