@@ -15,3 +15,9 @@ Operational notes:
 - The controller watches `CIDRPolicy` and managed `NetworkPolicy` objects cluster-wide, so the manifest uses a `ClusterRole` and `ClusterRoleBinding`.
 - The binary entry point is `ipmaze-controller run`; `--requeue-seconds` controls the steady-state requeue interval.
 - Required permissions include `cidrpolicies`, `cidrpolicies/status`, `networkpolicies`, and `events.events.k8s.io`.
+
+Example manifests for upstream IP range feeds live under `config/examples/`.
+
+- `google-cloud-us-central1-ipv4.yaml` shows a live Google Cloud allowlist query.
+- `microsoft-service-tags-storage-westus.yaml` shows a regional Microsoft service tag query against a mirrored weekly JSON file.
+- `config/examples/README.md` documents local smoke testing with the checked-in fixture payloads under `crates/ipmaze-controller/tests/fixtures/`.

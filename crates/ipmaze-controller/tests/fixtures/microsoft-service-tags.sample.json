@@ -1,0 +1,35 @@
+{
+    "name": "public",
+    "type": "Microsoft.Network/serviceTags",
+    "changeNumber": "63",
+    "cloud": "Public",
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Network/serviceTags/public",
+    "values": [
+        {
+            "name": "Storage.WestUS",
+            "id": "Storage.WestUS",
+            "properties": {
+                "addressPrefixes": [
+                    "13.64.39.16/32",
+                    "13.64.39.17/32",
+                    "20.150.12.0/24"
+                ],
+                "changeNumber": "7",
+                "region": "westus",
+                "systemService": "Storage"
+            }
+        },
+        {
+            "name": "AzureMonitor",
+            "id": "AzureMonitor",
+            "properties": {
+                "addressPrefixes": [
+                    "20.40.0.0/16"
+                ],
+                "changeNumber": "3",
+                "region": "",
+                "systemService": "AzureMonitor"
+            }
+        }
+    ]
+}

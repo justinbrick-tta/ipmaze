@@ -93,6 +93,8 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn deduplicates_and_sorts_valid_cidrs() {
@@ -141,5 +143,41 @@ mod tests {
         let payload = json!({ "prefixes": ["10.0.0.1"] });
         let err = extract_cidrs(&expression, &payload).unwrap_err();
         assert!(matches!(err, ExtractionError::InvalidCidr(value) if value == "10.0.0.1"));
+    }
+
+    #[test]
+    fn microsoft_service_tags_example_filters_one_regional_tag() {
+        let expression =
+            compile_query("values[?name=='Storage.WestUS'].properties.addressPrefixes[]").unwrap();
+        let payload = fixture_json("microsoft-service-tags.sample.json");
+
+        let actual = extract_cidrs(&expression, &payload).unwrap();
+        let rendered: Vec<_> = actual.into_iter().map(|item| item.rendered).collect();
+
+        assert_eq!(
+            rendered,
+            vec!["13.64.39.16/32", "13.64.39.17/32", "20.150.12.0/24"]
+        );
+    }
+
+    #[test]
+    fn google_cloud_example_filters_one_service_scope_and_family() {
+        let expression = compile_query(
+            "prefixes[?service=='Google Cloud' && scope=='us-central1' && ipv4Prefix].ipv4Prefix[]",
+        )
+        .unwrap();
+        let payload = fixture_json("google-cloud.sample.json");
+
+        let actual = extract_cidrs(&expression, &payload).unwrap();
+        let rendered: Vec<_> = actual.into_iter().map(|item| item.rendered).collect();
+
+        assert_eq!(rendered, vec!["34.68.0.0/14"]);
+    }
+
+    fn fixture_json(name: &str) -> Value {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
 }

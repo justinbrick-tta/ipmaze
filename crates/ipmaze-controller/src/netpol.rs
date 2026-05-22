@@ -47,7 +47,11 @@ pub fn render_peer_selector(rule: &RuleSpec) -> Result<NetworkPolicyPeer, Render
             .as_ref()
             .map(render_selector)
             .transpose()?,
-        pod_selector: rule.pod_selector.as_ref().map(render_selector).transpose()?,
+        pod_selector: rule
+            .pod_selector
+            .as_ref()
+            .map(render_selector)
+            .transpose()?,
     })
 }
 
@@ -84,7 +88,6 @@ pub fn build_managed_network_policy(
             pod_selector: subject_selector,
             policy_types: Some(policy_types),
         }),
-        ..NetworkPolicy::default()
     })
 }
 
@@ -152,7 +155,10 @@ fn build_egress_rules(
     Ok(egress_rules)
 }
 
-fn build_peers(rule: &RuleSpec, cidrs: &[NormalizedCidr]) -> Result<Vec<NetworkPolicyPeer>, RenderError> {
+fn build_peers(
+    rule: &RuleSpec,
+    cidrs: &[NormalizedCidr],
+) -> Result<Vec<NetworkPolicyPeer>, RenderError> {
     let mut peers = Vec::new();
     if rule.namespace_selector.is_some() || rule.pod_selector.is_some() {
         peers.push(render_peer_selector(rule)?);
@@ -171,11 +177,12 @@ fn build_peers(rule: &RuleSpec, cidrs: &[NormalizedCidr]) -> Result<Vec<NetworkP
 }
 
 fn render_selector(selector: &LabelSelector) -> Result<KubeLabelSelector, RenderError> {
-    let match_expressions = selector
-        .match_expressions
-        .as_ref()
-        .map(|requirements| {
-            requirements
+    let match_expressions =
+        selector
+            .match_expressions
+            .as_ref()
+            .map(|requirements| {
+                requirements
                 .iter()
                 .map(|requirement| {
                     let operator = match requirement.operator {
@@ -224,8 +231,8 @@ fn render_selector(selector: &LabelSelector) -> Result<KubeLabelSelector, Render
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
+            })
+            .transpose()?;
 
     Ok(KubeLabelSelector {
         match_labels: selector.match_labels.clone(),
@@ -236,9 +243,7 @@ fn render_selector(selector: &LabelSelector) -> Result<KubeLabelSelector, Render
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{
-        CIDRPolicySpec, LabelSelector, RuleSpec, SourceSpec, StringMap, TargetSpec,
-    };
+    use crate::api::{CIDRPolicySpec, LabelSelector, RuleSpec, SourceSpec, StringMap, TargetSpec};
     use pretty_assertions::assert_eq;
 
     fn policy_with_rule(rule: RuleSpec) -> CIDRPolicy {
@@ -251,10 +256,7 @@ mod tests {
                 },
                 target: TargetSpec {
                     pod_selector: LabelSelector {
-                        match_labels: Some(StringMap::from([(
-                            "app".to_owned(),
-                            "api".to_owned(),
-                        )])),
+                        match_labels: Some(StringMap::from([("app".to_owned(), "api".to_owned())])),
                         match_expressions: None,
                     },
                 },
@@ -418,8 +420,14 @@ mod tests {
         )
         .unwrap();
 
-        let first_peers = first.spec.unwrap().ingress.unwrap()[0].from.clone().unwrap();
-        let second_peers = second.spec.unwrap().ingress.unwrap()[0].from.clone().unwrap();
+        let first_peers = first.spec.unwrap().ingress.unwrap()[0]
+            .from
+            .clone()
+            .unwrap();
+        let second_peers = second.spec.unwrap().ingress.unwrap()[0]
+            .from
+            .clone()
+            .unwrap();
 
         let first_ipblocks = first_peers
             .into_iter()
@@ -455,7 +463,11 @@ mod tests {
             Some(&MANAGED_BY_VALUE.to_owned())
         );
         assert_eq!(
-            rendered.metadata.annotations.unwrap().get(SOURCE_POLICY_ANNOTATION),
+            rendered
+                .metadata
+                .annotations
+                .unwrap()
+                .get(SOURCE_POLICY_ANNOTATION),
             Some(&"office-allowlist".to_owned())
         );
         assert_eq!(rendered.metadata.owner_references.unwrap().len(), 1);

@@ -21,9 +21,16 @@ pub enum ReconcileStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconcileOutcome {
-    Reconciled { observed_cidrs: Vec<String> },
-    NoChange { observed_cidrs: Vec<String> },
-    Failed { stage: ReconcileStage, message: String },
+    Reconciled {
+        observed_cidrs: Vec<String>,
+    },
+    NoChange {
+        observed_cidrs: Vec<String>,
+    },
+    Failed {
+        stage: ReconcileStage,
+        message: String,
+    },
 }
 
 impl ReconcileStage {

@@ -348,56 +348,9 @@ pub async fn patch_status_for_outcome(
 ) -> Result<(), kube::Error>;
 ```
 
-## Staged Implementation Plan
+## Implementation Status
 
-### Milestone 1 - API Types and CRD Generation
-
-Status: Complete
-
-- Define `CIDRPolicy`, nested spec types, status types, and direction enums in Rust.
-- Generate the CRD YAML from the Rust types and place it under `config/crd/`.
-- Add schema contract tests comparing generated CRD structure against [spec/ipmaze-controller/policy.schema.json](../../spec/ipmaze-controller/policy.schema.json) for required fields, enum values, selector shapes, and status structure.
-- Add documentation describing how to regenerate the CRD.
-
-Implemented in [crates/ipmaze-controller/src/api.rs](../../crates/ipmaze-controller/src/api.rs), [crates/ipmaze-controller/src/lib.rs](../../crates/ipmaze-controller/src/lib.rs), [crates/ipmaze-controller/src/main.rs](../../crates/ipmaze-controller/src/main.rs), [crates/ipmaze-controller/tests/schema_contract.rs](../../crates/ipmaze-controller/tests/schema_contract.rs), and the generated CRD artifact [config/crd/cidrpolicies.ipmaze.k8s.justin.directory.yaml](../../config/crd/cidrpolicies.ipmaze.k8s.justin.directory.yaml).
-
-### Milestone 2 - Validation and Extraction Pipeline
-
-Status: Complete
-
-- Implement address validation, transport normalization with DNS-to-HTTPS and IP-to-HTTP defaults, JSON retrieval, JMESPath compilation, and strict CIDR extraction.
-- Add unit tests for invalid addresses, invalid JSON, invalid JMESPath, non-array results, non-string elements, invalid CIDRs, duplicate CIDRs, and empty-array success.
-- Add unit tests covering bare DNS name normalization, bare IP normalization, and explicit scheme preservation.
-
-Implemented in [crates/ipmaze-controller/src/source.rs](../../crates/ipmaze-controller/src/source.rs), [crates/ipmaze-controller/src/extract.rs](../../crates/ipmaze-controller/src/extract.rs), and [crates/ipmaze-controller/src/validation.rs](../../crates/ipmaze-controller/src/validation.rs). The current crate test suite covers the source normalization, JSON parsing, JMESPath validation, result-shape checks, CIDR validation, duplicate removal, and empty-result behavior required by this milestone.
-
-### Milestone 3 - NetworkPolicy Rendering
-
-Status: Complete
-
-- Implement selector translation and deterministic `NetworkPolicy` rendering.
-- Add unit tests for ingress-only, egress-only, omitted directionality, mixed IPv4 and IPv6 CIDRs, empty CIDR sets, and stale CIDR removal.
-- Document the managed policy naming and ownership scheme.
-
-Implemented in [crates/ipmaze-controller/src/netpol.rs](../../crates/ipmaze-controller/src/netpol.rs) with unit coverage for ingress-only and default-both directionality, mixed-family IPBlock rendering, empty CIDR handling, stale CIDR replacement, and controller-managed metadata markers. The managed policy name remains `<cidrpolicy-name>-managed`, and the rendered `NetworkPolicy` is marked with the `app.kubernetes.io/managed-by=ipmaze-controller` label, the `ipmaze.k8s.justin.directory/source-policy` annotation, and a controller owner reference when available.
-
-### Milestone 4 - Controller Runtime and Status Reporting
-
-Status: Complete
-
-- Implement the kube-rs reconcile loop, status updates, events, retry policy, and ownership or finalizer behavior.
-- Add integration tests against a test cluster or envtest-like harness covering create, update, delete, transient fetch failure after success, and no-op reconcile behavior.
-- Add operator-facing docs for required RBAC and deployment configuration.
-
-Implemented in [crates/ipmaze-controller/src/controller.rs](../../crates/ipmaze-controller/src/controller.rs), [crates/ipmaze-controller/src/status.rs](../../crates/ipmaze-controller/src/status.rs), and [crates/ipmaze-controller/src/main.rs](../../crates/ipmaze-controller/src/main.rs). The controller now runs a kube-rs reconcile loop, patches status for success, no-change, and failure outcomes, emits Kubernetes events for successful reconciles, cleanup, and failures, and deletes the managed `NetworkPolicy` when a `CIDRPolicy` enters deletion. Integration-style coverage for create, update, delete, transient fetch failure after success, and no-change behavior lives in [crates/ipmaze-controller/tests/controller_runtime.rs](../../crates/ipmaze-controller/tests/controller_runtime.rs) using a fake Kubernetes API harness plus real HTTP fixtures for the remote source. Operator-facing RBAC and deployment configuration are provided in [config/controller/rbac.yaml](../../config/controller/rbac.yaml), [config/controller/deployment.yaml](../../config/controller/deployment.yaml), and [config/controller/README.md](../../config/controller/README.md).
-
-### Milestone 5 - Release Hardening
-
-Status: Not started
-
-- Add CI for CRD generation drift, formatting, clippy, unit tests, and integration tests.
-- Add example manifests and end-to-end fixture payloads.
-- Verify that previously successful policies remain intact across remote-source failures.
+All planned milestones are complete. The staged milestone checklist has been retired because the implementation now includes typed CRD generation and schema contract coverage, source validation and extraction tests, deterministic `NetworkPolicy` rendering, controller runtime and status behavior, repository CI for formatting, linting, tests, and CRD drift, example manifests with checked-in fixture payloads, and regression coverage that preserves the last known good managed policy across remote-source failures.
 
 ## Traceability
 

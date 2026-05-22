@@ -3,10 +3,10 @@ use ipmaze_controller::api::{
     CIDRPolicy, CIDRPolicySpec, CIDRPolicyStatus, Direction, LabelSelector, RuleSpec, SourceSpec,
     StringMap, TargetSpec,
 };
+use ipmaze_controller::build_http_client;
 use ipmaze_controller::controller::{handle_reconcile_failure, reconcile, ControllerContext};
 use ipmaze_controller::extract::{IpFamily, NormalizedCidr};
 use ipmaze_controller::netpol::build_managed_network_policy;
-use ipmaze_controller::build_http_client;
 use k8s_openapi::api::events::v1::Event as K8sEvent;
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Status, Time};
@@ -51,7 +51,10 @@ async fn reconcile_creates_policy_updates_status_and_emits_event() {
     let state = state.lock().unwrap();
     let managed = state
         .network_policies
-        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .get(&(
+            policy.namespace().unwrap(),
+            policy.managed_network_policy_name(),
+        ))
         .unwrap();
     let cidrs = rendered_ipblocks(managed);
     assert_eq!(cidrs, vec!["10.0.0.0/24"]);
@@ -87,7 +90,10 @@ async fn reconcile_updates_existing_managed_policy() {
         let mut state = state.lock().unwrap();
         state.policies.insert(policy_key(&policy), policy.clone());
         state.network_policies.insert(
-            (policy.namespace().unwrap(), policy.managed_network_policy_name()),
+            (
+                policy.namespace().unwrap(),
+                policy.managed_network_policy_name(),
+            ),
             old_policy,
         );
     }
@@ -98,7 +104,10 @@ async fn reconcile_updates_existing_managed_policy() {
     let state = state.lock().unwrap();
     let managed = state
         .network_policies
-        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .get(&(
+            policy.namespace().unwrap(),
+            policy.managed_network_policy_name(),
+        ))
         .unwrap();
     assert_eq!(rendered_ipblocks(managed), vec!["192.0.2.0/24"]);
     assert_eq!(state.netpol_patch_count, 1);
@@ -122,7 +131,10 @@ async fn reconcile_deletes_managed_policy_when_resource_is_terminating() {
         let mut state = state.lock().unwrap();
         state.policies.insert(policy_key(&policy), policy.clone());
         state.network_policies.insert(
-            (policy.namespace().unwrap(), policy.managed_network_policy_name()),
+            (
+                policy.namespace().unwrap(),
+                policy.managed_network_policy_name(),
+            ),
             managed_policy,
         );
     }
@@ -131,9 +143,10 @@ async fn reconcile_deletes_managed_policy_when_resource_is_terminating() {
     reconcile(Arc::new(policy.clone()), ctx).await.unwrap();
 
     let state = state.lock().unwrap();
-    assert!(!state
-        .network_policies
-        .contains_key(&(policy.namespace().unwrap(), policy.managed_network_policy_name())));
+    assert!(!state.network_policies.contains_key(&(
+        policy.namespace().unwrap(),
+        policy.managed_network_policy_name()
+    )));
     assert_eq!(state.netpol_delete_count, 1);
     assert_eq!(event_reasons(&state), vec!["CleanupManagedPolicy"]);
 }
@@ -156,13 +169,18 @@ async fn failed_reconcile_preserves_last_good_policy_and_records_warning() {
         state.policies.insert(policy_key(&policy), policy.clone());
     }
     let ctx = test_context(state.clone());
-    reconcile(Arc::new(policy.clone()), ctx.clone()).await.unwrap();
+    reconcile(Arc::new(policy.clone()), ctx.clone())
+        .await
+        .unwrap();
 
     let before_failure = state
         .lock()
         .unwrap()
         .network_policies
-        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .get(&(
+            policy.namespace().unwrap(),
+            policy.managed_network_policy_name(),
+        ))
         .cloned()
         .unwrap();
 
@@ -176,19 +194,17 @@ async fn failed_reconcile_preserves_last_good_policy_and_records_warning() {
     let err = reconcile(Arc::new(policy.clone()), ctx.clone())
         .await
         .unwrap_err();
-    handle_reconcile_failure(
-        Arc::new(policy.clone()),
-        err.stage(),
-        err.to_string(),
-        ctx,
-    )
-    .await
-    .unwrap();
+    handle_reconcile_failure(Arc::new(policy.clone()), err.stage(), err.to_string(), ctx)
+        .await
+        .unwrap();
 
     let state = state.lock().unwrap();
     let after_failure = state
         .network_policies
-        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .get(&(
+            policy.namespace().unwrap(),
+            policy.managed_network_policy_name(),
+        ))
         .unwrap();
     assert_eq!(after_failure.spec, before_failure.spec);
 
@@ -225,7 +241,10 @@ async fn no_change_reconcile_avoids_network_policy_write() {
         let mut state = state.lock().unwrap();
         state.policies.insert(policy_key(&policy), policy.clone());
         state.network_policies.insert(
-            (policy.namespace().unwrap(), policy.managed_network_policy_name()),
+            (
+                policy.namespace().unwrap(),
+                policy.managed_network_policy_name(),
+            ),
             managed_policy,
         );
         state.netpol_patch_count = 0;
@@ -250,10 +269,7 @@ fn sample_policy(address: &str) -> CIDRPolicy {
             },
             target: TargetSpec {
                 pod_selector: LabelSelector {
-                    match_labels: Some(StringMap::from([(
-                        "app".to_owned(),
-                        "api".to_owned(),
-                    )])),
+                    match_labels: Some(StringMap::from([("app".to_owned(), "api".to_owned())])),
                     match_expressions: None,
                 },
             },
@@ -354,34 +370,20 @@ async fn handle_request(
         }
         (
             "GET",
-            [
-                "apis",
-                "ipmaze.k8s.justin.directory",
-                "v1alpha1",
-                "namespaces",
-                namespace,
-                "cidrpolicies",
-                name,
-            ],
+            ["apis", "ipmaze.k8s.justin.directory", "v1alpha1", "namespaces", namespace, "cidrpolicies", name],
         ) => {
             let state = state.lock().unwrap();
-            match state.policies.get(&(namespace.to_string(), name.to_string())) {
+            match state
+                .policies
+                .get(&(namespace.to_string(), name.to_string()))
+            {
                 Some(policy) => json_response(StatusCode::OK, policy),
                 None => not_found_response("CIDRPolicy", name),
             }
         }
         (
             "PATCH",
-            [
-                "apis",
-                "ipmaze.k8s.justin.directory",
-                "v1alpha1",
-                "namespaces",
-                namespace,
-                "cidrpolicies",
-                name,
-                "status",
-            ],
+            ["apis", "ipmaze.k8s.justin.directory", "v1alpha1", "namespaces", namespace, "cidrpolicies", name, "status"],
         ) => {
             let patch: Value = deserialize_body(body.as_ref());
             let status_value = patch.get("status").cloned().unwrap_or(Value::Null);
@@ -396,23 +398,21 @@ async fn handle_request(
             policy.status = Some(status);
             json_response(StatusCode::OK, policy)
         }
-        (
-            "POST",
-            ["apis", "events.k8s.io", "v1", "namespaces", namespace, "events"],
-        ) => {
+        ("POST", ["apis", "events.k8s.io", "v1", "namespaces", namespace, "events"]) => {
             let event: K8sEvent = deserialize_body(body.as_ref());
             let name = event.metadata.name.clone().unwrap();
             let mut state = state.lock().unwrap();
-            state.events.insert(format!("{namespace}/{name}"), event.clone());
+            state
+                .events
+                .insert(format!("{namespace}/{name}"), event.clone());
             json_response(StatusCode::CREATED, &event)
         }
-        (
-            "PATCH",
-            ["apis", "events.k8s.io", "v1", "namespaces", namespace, "events", name],
-        ) => {
+        ("PATCH", ["apis", "events.k8s.io", "v1", "namespaces", namespace, "events", name]) => {
             let event: K8sEvent = deserialize_body(body.as_ref());
             let mut state = state.lock().unwrap();
-            state.events.insert(format!("{namespace}/{name}"), event.clone());
+            state
+                .events
+                .insert(format!("{namespace}/{name}"), event.clone());
             json_response(StatusCode::OK, &event)
         }
         _ => json_response(
@@ -423,7 +423,9 @@ async fn handle_request(
 }
 
 fn deserialize_body<T: DeserializeOwned>(body: &[u8]) -> T {
-    serde_json::from_slice(body).or_else(|_| serde_yaml::from_slice(body)).unwrap()
+    serde_json::from_slice(body)
+        .or_else(|_| serde_yaml::from_slice(body))
+        .unwrap()
 }
 
 fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response<Body> {
