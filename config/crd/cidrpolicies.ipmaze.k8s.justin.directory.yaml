@@ -20,6 +20,9 @@ spec:
         properties:
           spec:
             properties:
+              resyncSchedule:
+                nullable: true
+                type: string
               rules:
                 items:
                   properties:
@@ -103,6 +106,14 @@ spec:
                     type: string
                   jmesPath:
                     type: string
+                  pointer:
+                    nullable: true
+                    properties:
+                      regex:
+                        type: string
+                    required:
+                    - regex
+                    type: object
                 required:
                 - address
                 - jmesPath

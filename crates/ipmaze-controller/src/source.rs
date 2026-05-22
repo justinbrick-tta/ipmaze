@@ -1,3 +1,4 @@
+use regex::Regex;
 use reqwest::redirect::Policy;
 use serde_json::Value;
 use std::net::IpAddr;
@@ -19,6 +20,13 @@ pub struct NormalizedRemoteAddress {
     pub request_url: Url,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedSource {
+    pub base_address: NormalizedRemoteAddress,
+    pub final_address: NormalizedRemoteAddress,
+    pub pointer_used: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum SourceAddressError {
     #[error("remote address must not be empty")]
@@ -33,8 +41,16 @@ pub enum SourceAddressError {
 
 #[derive(Debug, Error)]
 pub enum FetchError {
-    #[error(transparent)]
-    Http(#[from] reqwest::Error),
+    #[error("unable to retrieve pointer content")]
+    PointerRetrieval(#[source] reqwest::Error),
+    #[error("pointer regex did not match the pointer response body")]
+    PointerExtractionNoMatch,
+    #[error("pointer regex must capture a non-empty first capture group")]
+    PointerExtractionEmptyCapture,
+    #[error("pointer regex captured an invalid remote address")]
+    PointerResolvedAddress(#[source] SourceAddressError),
+    #[error("unable to retrieve final JSON source")]
+    FinalRetrieval(#[source] reqwest::Error),
     #[error("response body is not valid JSON")]
     InvalidJson(#[source] serde_json::Error),
 }
@@ -88,6 +104,54 @@ pub fn build_http_client() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
+pub async fn resolve_final_source(
+    client: &reqwest::Client,
+    base_address: &NormalizedRemoteAddress,
+    pointer_regex: Option<&Regex>,
+) -> Result<ResolvedSource, FetchError> {
+    let Some(pointer_regex) = pointer_regex else {
+        return Ok(ResolvedSource {
+            base_address: base_address.clone(),
+            final_address: base_address.clone(),
+            pointer_used: false,
+        });
+    };
+
+    let pointer_body = fetch_text(client, base_address).await?;
+    let captures = pointer_regex
+        .captures(&pointer_body)
+        .ok_or(FetchError::PointerExtractionNoMatch)?;
+    let resolved = captures
+        .get(1)
+        .map(|capture| capture.as_str().trim())
+        .filter(|capture| !capture.is_empty())
+        .ok_or(FetchError::PointerExtractionEmptyCapture)?;
+    let final_address = normalize_source_address(resolved)
+        .map_err(FetchError::PointerResolvedAddress)?;
+
+    Ok(ResolvedSource {
+        base_address: base_address.clone(),
+        final_address,
+        pointer_used: true,
+    })
+}
+
+pub async fn fetch_text(
+    client: &reqwest::Client,
+    address: &NormalizedRemoteAddress,
+) -> Result<String, FetchError> {
+    client
+        .get(address.request_url.clone())
+        .send()
+        .await
+        .map_err(FetchError::PointerRetrieval)?
+        .error_for_status()
+        .map_err(FetchError::PointerRetrieval)?
+        .text()
+        .await
+        .map_err(FetchError::PointerRetrieval)
+}
+
 pub async fn fetch_json(
     client: &reqwest::Client,
     address: &NormalizedRemoteAddress,
@@ -95,9 +159,11 @@ pub async fn fetch_json(
     let response = client
         .get(address.request_url.clone())
         .send()
-        .await?
-        .error_for_status()?;
-    let body = response.bytes().await?;
+        .await
+        .map_err(FetchError::FinalRetrieval)?
+        .error_for_status()
+        .map_err(FetchError::FinalRetrieval)?;
+    let body = response.bytes().await.map_err(FetchError::FinalRetrieval)?;
     parse_json_bytes(body.as_ref())
 }
 
@@ -131,6 +197,8 @@ fn is_valid_hostname_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn bare_dns_names_default_to_https() {
@@ -168,5 +236,69 @@ mod tests {
     fn invalid_json_is_rejected() {
         let err = parse_json_bytes(br#"not-json"#).unwrap_err();
         assert!(matches!(err, FetchError::InvalidJson(_)));
+    }
+
+    #[tokio::test]
+    async fn pointer_resolution_uses_first_capture_group_and_normalizes_dns() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pointer.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "window.endpoint='example.invalid'; fallback='ignored.invalid';",
+            ))
+            .mount(&server)
+            .await;
+
+        let client = build_http_client().unwrap();
+        let base_address = normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
+        let regex = Regex::new("endpoint='([^']+)'").unwrap();
+
+        let resolved = resolve_final_source(&client, &base_address, Some(&regex))
+            .await
+            .unwrap();
+
+        assert!(resolved.pointer_used);
+        assert_eq!(resolved.final_address.original, "example.invalid");
+        assert_eq!(resolved.final_address.request_url.as_str(), "https://example.invalid/");
+    }
+
+    #[tokio::test]
+    async fn pointer_resolution_rejects_missing_match() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pointer.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("no endpoint here"))
+            .mount(&server)
+            .await;
+
+        let client = build_http_client().unwrap();
+        let base_address = normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
+        let regex = Regex::new("endpoint='([^']+)'").unwrap();
+
+        let err = resolve_final_source(&client, &base_address, Some(&regex))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, FetchError::PointerExtractionNoMatch));
+    }
+
+    #[tokio::test]
+    async fn pointer_resolution_rejects_empty_capture_group() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/pointer.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("endpoint=''"))
+            .mount(&server)
+            .await;
+
+        let client = build_http_client().unwrap();
+        let base_address = normalize_source_address(&format!("{}/pointer.txt", server.uri())).unwrap();
+        let regex = Regex::new("endpoint='([^']*)'").unwrap();
+
+        let err = resolve_final_source(&client, &base_address, Some(&regex))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, FetchError::PointerExtractionEmptyCapture));
     }
 }

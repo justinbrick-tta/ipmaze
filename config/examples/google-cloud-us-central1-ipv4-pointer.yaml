@@ -1,0 +1,21 @@
+apiVersion: ipmaze.k8s.justin.directory/v1alpha1
+kind: CIDRPolicy
+metadata:
+  name: google-cloud-us-central1-ipv4-pointer
+  namespace: default
+spec:
+  source:
+    address: https://mirror.example.com/google-cloud-endpoint.txt
+    pointer:
+      regex: endpoint=(https?://\S+)
+    jmesPath: prefixes[?service=='Google Cloud' && scope=='us-central1' && ipv4Prefix].ipv4Prefix[]
+  target:
+    podSelector:
+      matchLabels:
+        app: api
+  rules:
+    - directions:
+        - ingress
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress

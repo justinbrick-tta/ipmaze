@@ -252,8 +252,10 @@ mod tests {
             CIDRPolicySpec {
                 source: SourceSpec {
                     address: "example.invalid".to_owned(),
+                    pointer: None,
                     jmes_path: "prefixes".to_owned(),
                 },
+                resync_schedule: None,
                 target: TargetSpec {
                     pod_selector: LabelSelector {
                         match_labels: Some(StringMap::from([("app".to_owned(), "api".to_owned())])),

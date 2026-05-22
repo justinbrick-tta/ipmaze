@@ -1,12 +1,16 @@
+use chrono::TimeZone;
 use http::{Request, Response, StatusCode};
 use ipmaze_controller::api::{
-    CIDRPolicy, CIDRPolicySpec, CIDRPolicyStatus, Direction, LabelSelector, RuleSpec, SourceSpec,
-    StringMap, TargetSpec,
+    CIDRPolicy, CIDRPolicySpec, CIDRPolicyStatus, Direction, LabelSelector, PointerSpec,
+    RuleSpec, SourceSpec, StringMap, TargetSpec,
 };
 use ipmaze_controller::build_http_client;
-use ipmaze_controller::controller::{handle_reconcile_failure, reconcile, ControllerContext};
+use ipmaze_controller::controller::{
+    handle_reconcile_failure, next_resync_after, reconcile, ControllerContext,
+};
 use ipmaze_controller::extract::{IpFamily, NormalizedCidr};
 use ipmaze_controller::netpol::build_managed_network_policy;
+use ipmaze_controller::validate_resync_schedule;
 use k8s_openapi::api::events::v1::Event as K8sEvent;
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Status, Time};
@@ -46,7 +50,7 @@ async fn reconcile_creates_policy_updates_status_and_emits_event() {
         .insert(policy_key(&policy), policy.clone());
     let ctx = test_context(state.clone());
 
-    reconcile(Arc::new(policy.clone()), ctx).await.unwrap();
+    let action = reconcile(Arc::new(policy.clone()), ctx).await.unwrap();
 
     let state = state.lock().unwrap();
     let managed = state
@@ -71,6 +75,132 @@ async fn reconcile_creates_policy_updates_status_and_emits_event() {
 
     let reasons = event_reasons(&state);
     assert_eq!(reasons, vec!["Reconciled"]);
+    assert_ne!(action, kube::runtime::controller::Action::await_change());
+}
+
+#[tokio::test]
+async fn reconcile_resolves_pointer_source_and_updates_policy() {
+    let remote = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pointer.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "endpoint={}/allowlist.json",
+            remote.uri()
+        )))
+        .mount(&remote)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/allowlist.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "prefixes": ["203.0.113.0/24"]
+        })))
+        .mount(&remote)
+        .await;
+
+    let mut policy = sample_policy(&format!("{}/pointer.txt", remote.uri()));
+    policy.spec.source.pointer = Some(PointerSpec {
+        regex: "endpoint=(https?://\\S+)".to_owned(),
+    });
+    let state = Arc::new(Mutex::new(FakeKubeState::default()));
+    state
+        .lock()
+        .unwrap()
+        .policies
+        .insert(policy_key(&policy), policy.clone());
+    let ctx = test_context(state.clone());
+
+    reconcile(Arc::new(policy.clone()), ctx).await.unwrap();
+
+    let state = state.lock().unwrap();
+    let managed = state
+        .network_policies
+        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .unwrap();
+    assert_eq!(rendered_ipblocks(managed), vec!["203.0.113.0/24"]);
+}
+
+#[tokio::test]
+async fn pointer_extraction_failure_preserves_last_good_policy_and_records_stage() {
+    let remote = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pointer.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "endpoint={}/allowlist.json",
+            remote.uri()
+        )))
+        .mount(&remote)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/allowlist.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "prefixes": ["10.0.0.0/24"]
+        })))
+        .mount(&remote)
+        .await;
+
+    let mut policy = sample_policy(&format!("{}/pointer.txt", remote.uri()));
+    policy.spec.source.pointer = Some(PointerSpec {
+        regex: "endpoint=(https?://\\S+)".to_owned(),
+    });
+    let state = Arc::new(Mutex::new(FakeKubeState::default()));
+    {
+        let mut state = state.lock().unwrap();
+        state.policies.insert(policy_key(&policy), policy.clone());
+    }
+    let ctx = test_context(state.clone());
+    reconcile(Arc::new(policy.clone()), ctx.clone())
+        .await
+        .unwrap();
+
+    let before_failure = state
+        .lock()
+        .unwrap()
+        .network_policies
+        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .cloned()
+        .unwrap();
+
+    remote.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/pointer.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("no endpoint here"))
+        .mount(&remote)
+        .await;
+
+    let err = reconcile(Arc::new(policy.clone()), ctx.clone())
+        .await
+        .unwrap_err();
+    handle_reconcile_failure(Arc::new(policy.clone()), err.stage(), err.to_string(), ctx)
+        .await
+        .unwrap();
+
+    let state = state.lock().unwrap();
+    let after_failure = state
+        .network_policies
+        .get(&(policy.namespace().unwrap(), policy.managed_network_policy_name()))
+        .unwrap();
+    assert_eq!(after_failure.spec, before_failure.spec);
+    assert!(state
+        .policies
+        .get(&policy_key(&policy))
+        .and_then(|policy| policy.status.as_ref())
+        .and_then(|status| status.last_reconciliation_error.as_ref())
+        .unwrap()
+        .contains("pointer-extraction:"));
+}
+
+#[tokio::test]
+async fn custom_resync_schedule_controls_requeue_timing() {
+    let schedule = validate_resync_schedule(Some("* * * * *")).unwrap();
+    let now = chrono::Utc
+        .with_ymd_and_hms(2026, 5, 22, 12, 34, 30)
+        .single()
+        .unwrap();
+
+    let requeue_after = next_resync_after(&schedule, now).unwrap();
+
+    assert!(requeue_after > Duration::ZERO);
+    assert!(requeue_after < Duration::from_secs(60));
 }
 
 #[tokio::test]
@@ -265,8 +395,10 @@ fn sample_policy(address: &str) -> CIDRPolicy {
         CIDRPolicySpec {
             source: SourceSpec {
                 address: address.to_owned(),
+                pointer: None,
                 jmes_path: "prefixes".to_owned(),
             },
+            resync_schedule: None,
             target: TargetSpec {
                 pod_selector: LabelSelector {
                     match_labels: Some(StringMap::from([("app".to_owned(), "api".to_owned())])),
@@ -292,6 +424,13 @@ fn sample_policy(address: &str) -> CIDRPolicy {
 }
 
 fn test_context(state: Arc<Mutex<FakeKubeState>>) -> Arc<ControllerContext> {
+    test_context_with_requeue(state, Duration::from_secs(60))
+}
+
+fn test_context_with_requeue(
+    state: Arc<Mutex<FakeKubeState>>,
+    requeue_after: Duration,
+) -> Arc<ControllerContext> {
     let client = fake_client(state);
     Arc::new(ControllerContext {
         http_client: build_http_client().unwrap(),
@@ -303,7 +442,7 @@ fn test_context(state: Arc<Mutex<FakeKubeState>>) -> Arc<ControllerContext> {
             },
         ),
         client,
-        requeue_after: Duration::from_secs(60),
+        requeue_after,
     })
 }
 

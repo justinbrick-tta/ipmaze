@@ -70,6 +70,12 @@
                 "source": {
                     "$ref": "#/$defs/source"
                 },
+                "resyncSchedule": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\S+(?:\\s+\\S+){4}$",
+                    "description": "Optional standard 5-field cron expression controlling periodic background resynchronization. If omitted, implementations MUST behave as though the value were `0 0 * * *` in UTC."
+                },
                 "target": {
                     "$ref": "#/$defs/target"
                 },
@@ -93,7 +99,7 @@
                 "address": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Remote source address. Implementations may accept an HTTP(S) URL or a bare DNS/IP address. Bare DNS names MUST be retrieved as HTTPS URLs and bare IP addresses MUST be retrieved as HTTP URLs.",
+                    "description": "Base remote source address. Implementations may accept an HTTP(S) URL or a bare DNS/IP address. Bare DNS names MUST be retrieved as HTTPS URLs and bare IP addresses MUST be retrieved as HTTP URLs. When `pointer` is omitted, this address identifies the final JSON endpoint. When `pointer` is present, this address identifies the pointer endpoint whose response body is scanned to locate the final JSON endpoint.",
                     "oneOf": [
                         {
                             "format": "hostname"
@@ -110,10 +116,27 @@
                         }
                     ]
                 },
+                "pointer": {
+                    "$ref": "#/$defs/pointer"
+                },
                 "jmesPath": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "JMESPath expression evaluated against the fetched JSON payload."
+                    "description": "JMESPath expression evaluated against the fetched JSON payload returned by the final resolved JSON endpoint."
+                }
+            }
+        },
+        "pointer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "regex"
+            ],
+            "properties": {
+                "regex": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Regular expression applied to the full pointer response body. Implementations MUST use the first capture group from the first match as the final JSON endpoint and MUST fail reconciliation when no match is found or the first capture group is empty."
                 }
             }
         },

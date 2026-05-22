@@ -1,9 +1,12 @@
 use crate::api::CIDRPolicy;
+use crate::extract::compile_query;
 use crate::extract::ExtractionError;
 use crate::netpol::{apply_managed_network_policy, build_managed_network_policy, RenderError};
-use crate::source::{build_http_client, fetch_json, FetchError};
+use crate::source::{build_http_client, fetch_json, resolve_final_source, FetchError};
 use crate::status::{patch_status_for_outcome, ReconcileOutcome, ReconcileStage};
 use crate::validation::{validate_policy, ValidationError};
+use chrono::{DateTime, Utc};
+use cron::Schedule;
 use futures::StreamExt;
 use k8s_openapi::api::networking::v1::NetworkPolicy;
 use kube::api::{Api, DeleteParams};
@@ -42,6 +45,8 @@ pub enum ReconcileError {
     Extract(#[from] ExtractionError),
     #[error(transparent)]
     Render(#[from] RenderError),
+    #[error("unable to calculate next resync: {0}")]
+    Scheduling(String),
     #[error(transparent)]
     KubernetesApi(#[from] kube::Error),
 }
@@ -53,7 +58,13 @@ impl ReconcileError {
                 ReconcileStage::JmesPathCompile
             }
             Self::Validation(_) => ReconcileStage::Validation,
-            Self::Fetch(FetchError::Http(_)) => ReconcileStage::Transport,
+            Self::Fetch(FetchError::PointerRetrieval(_)) => ReconcileStage::PointerRetrieval,
+            Self::Fetch(FetchError::PointerExtractionNoMatch)
+            | Self::Fetch(FetchError::PointerExtractionEmptyCapture)
+            | Self::Fetch(FetchError::PointerResolvedAddress(_)) => {
+                ReconcileStage::PointerExtraction
+            }
+            Self::Fetch(FetchError::FinalRetrieval(_)) => ReconcileStage::Transport,
             Self::Fetch(FetchError::InvalidJson(_)) => ReconcileStage::JsonDecode,
             Self::Extract(ExtractionError::Evaluate(_)) => ReconcileStage::JmesPathEvaluate,
             Self::Extract(ExtractionError::ResultNotArray)
@@ -61,6 +72,7 @@ impl ReconcileError {
             Self::Extract(ExtractionError::InvalidCidr(_)) => ReconcileStage::CidrValidation,
             Self::Extract(_) => ReconcileStage::JmesPathEvaluate,
             Self::Render(_) => ReconcileStage::SelectorTranslation,
+            Self::Scheduling(_) => ReconcileStage::Scheduling,
             Self::KubernetesApi(_) => ReconcileStage::KubernetesApi,
         }
     }
@@ -110,24 +122,29 @@ pub async fn reconcile(
         return Ok(Action::await_change());
     }
 
-    let source_address = {
-        let validated = validate_policy(&policy)?;
-        validated.source_address
+    let validated = validate_policy(&policy)?;
+    let resolved_source = resolve_final_source(
+        &ctx.http_client,
+        &validated.source_address,
+        validated.pointer_regex.as_ref(),
+    )
+    .await?;
+    let payload = fetch_json(&ctx.http_client, &resolved_source.final_address).await?;
+    let (rendered, observed_cidrs) = {
+        let query = compile_query(&policy.spec.source.jmes_path).map_err(ValidationError::from)?;
+        let cidrs = crate::extract::extract_cidrs(&query, &payload)?;
+        let rendered = build_managed_network_policy(&policy, &cidrs)?;
+        let observed_cidrs = cidrs
+            .iter()
+            .map(|cidr| cidr.rendered.clone())
+            .collect::<Vec<_>>();
+
+        (rendered, observed_cidrs)
     };
-    let payload = fetch_json(&ctx.http_client, &source_address).await?;
-    let cidrs = {
-        let validated = validate_policy(&policy)?;
-        crate::extract::extract_cidrs(&validated.query, &payload)?
-    };
-    let rendered = build_managed_network_policy(&policy, &cidrs)?;
     let namespace = policy.namespace().ok_or(RenderError::MissingNamespace)?;
     let policies_api: Api<CIDRPolicy> = Api::namespaced(ctx.client.clone(), &namespace);
     let netpol_api: Api<NetworkPolicy> = Api::namespaced(ctx.client.clone(), &namespace);
     let existing = get_managed_network_policy(&netpol_api, &policy).await?;
-    let observed_cidrs = cidrs
-        .iter()
-        .map(|cidr| cidr.rendered.clone())
-        .collect::<Vec<_>>();
     let outcome = classify_outcome(existing.as_ref(), &rendered, observed_cidrs.clone());
 
     if matches!(outcome, ReconcileOutcome::Reconciled { .. }) {
@@ -136,7 +153,9 @@ pub async fn reconcile(
 
     patch_status_for_outcome(&policies_api, &policy, &outcome).await?;
     publish_outcome_event(&policy, Some(&rendered), &outcome, &ctx).await?;
-    Ok(Action::requeue(ctx.requeue_after))
+    Ok(Action::requeue(schedule_requeue_after(
+        &validated.resync_schedule,
+    )?))
 }
 
 pub async fn cleanup(
@@ -190,6 +209,30 @@ pub fn error_policy(
     });
 
     Action::requeue(ctx.requeue_after)
+}
+
+fn schedule_requeue_after(schedule: &Schedule) -> Result<Duration, ReconcileError> {
+    next_resync_after(schedule, Utc::now()).map_err(ReconcileError::Scheduling)
+}
+
+pub fn next_resync_after(
+    schedule: &Schedule,
+    now: DateTime<Utc>,
+) -> Result<Duration, String> {
+    let next = schedule
+        .after(&now)
+        .next()
+        .ok_or_else(|| "schedule did not produce a future execution".to_owned())?;
+    let delay = next
+        .signed_duration_since(now)
+        .to_std()
+        .map_err(|error| error.to_string())?;
+
+    if delay.is_zero() {
+        Ok(Duration::from_secs(1))
+    } else {
+        Ok(delay)
+    }
 }
 
 pub async fn handle_reconcile_failure(
@@ -330,6 +373,8 @@ mod tests {
     use super::*;
     use crate::api::{CIDRPolicySpec, Direction, LabelSelector, RuleSpec, SourceSpec, TargetSpec};
     use crate::extract::{IpFamily, NormalizedCidr};
+    use crate::validation::validate_resync_schedule;
+    use chrono::TimeZone;
 
     fn sample_policy() -> CIDRPolicy {
         let mut policy = CIDRPolicy::new(
@@ -337,8 +382,10 @@ mod tests {
             CIDRPolicySpec {
                 source: SourceSpec {
                     address: "example.invalid".to_owned(),
+                    pointer: None,
                     jmes_path: "prefixes".to_owned(),
                 },
+                resync_schedule: None,
                 target: TargetSpec {
                     pod_selector: LabelSelector::default(),
                 },
@@ -396,5 +443,22 @@ mod tests {
     fn reconcile_error_maps_result_shape_failures() {
         let error = ReconcileError::Extract(ExtractionError::ResultNotArray);
         assert_eq!(error.stage(), ReconcileStage::ResultShape);
+    }
+
+    #[test]
+    fn reconcile_error_maps_pointer_extraction_failures() {
+        let error = ReconcileError::Fetch(FetchError::PointerExtractionNoMatch);
+        assert_eq!(error.stage(), ReconcileStage::PointerExtraction);
+    }
+
+    #[test]
+    fn next_resync_after_returns_non_zero_delay_for_minutely_schedule() {
+        let schedule = validate_resync_schedule(Some("* * * * *")).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 5, 22, 12, 34, 30).single().unwrap();
+
+        let delay = next_resync_after(&schedule, now).unwrap();
+
+        assert!(delay > Duration::ZERO);
+        assert!(delay < Duration::from_secs(60));
     }
 }

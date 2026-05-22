@@ -9,6 +9,8 @@ const STATUS_FIELD_MANAGER: &str = "ipmaze-controller-status";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconcileStage {
     Validation,
+    PointerRetrieval,
+    PointerExtraction,
     Transport,
     JsonDecode,
     JmesPathCompile,
@@ -16,6 +18,7 @@ pub enum ReconcileStage {
     ResultShape,
     CidrValidation,
     SelectorTranslation,
+    Scheduling,
     KubernetesApi,
 }
 
@@ -37,6 +40,8 @@ impl ReconcileStage {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Validation => "validation",
+            Self::PointerRetrieval => "pointer-retrieval",
+            Self::PointerExtraction => "pointer-extraction",
             Self::Transport => "transport",
             Self::JsonDecode => "json-decode",
             Self::JmesPathCompile => "jmespath-compile",
@@ -44,6 +49,7 @@ impl ReconcileStage {
             Self::ResultShape => "result-shape",
             Self::CidrValidation => "cidr-validation",
             Self::SelectorTranslation => "selector-translation",
+            Self::Scheduling => "scheduling",
             Self::KubernetesApi => "kubernetes-api",
         }
     }
@@ -107,8 +113,10 @@ mod tests {
             CIDRPolicySpec {
                 source: SourceSpec {
                     address: "example.invalid".to_owned(),
+                    pointer: None,
                     jmes_path: "prefixes".to_owned(),
                 },
+                resync_schedule: None,
                 target: TargetSpec {
                     pod_selector: LabelSelector::default(),
                 },

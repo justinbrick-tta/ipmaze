@@ -17,6 +17,8 @@ pub type StringMap = BTreeMap<String, String>;
 )]
 pub struct CIDRPolicySpec {
     pub source: SourceSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resync_schedule: Option<String>,
     pub target: TargetSpec,
     pub rules: Vec<RuleSpec>,
 }
@@ -41,7 +43,15 @@ pub struct CIDRPolicyStatus {
 #[serde(rename_all = "camelCase")]
 pub struct SourceSpec {
     pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer: Option<PointerSpec>,
     pub jmes_path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PointerSpec {
+    pub regex: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]

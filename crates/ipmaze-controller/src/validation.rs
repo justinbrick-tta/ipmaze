@@ -4,13 +4,18 @@ use crate::api::{
 };
 use crate::extract::{compile_query, QueryError};
 use crate::source::{normalize_source_address, NormalizedRemoteAddress, SourceAddressError};
-use jmespath::Expression;
+use cron::Schedule;
+use regex::Regex;
+use std::str::FromStr;
 use thiserror::Error;
+
+pub const DEFAULT_RESYNC_SCHEDULE: &str = "0 0 * * *";
 
 #[derive(Debug)]
 pub struct ValidatedPolicy {
     pub source_address: NormalizedRemoteAddress,
-    pub query: Expression<'static>,
+    pub pointer_regex: Option<Regex>,
+    pub resync_schedule: Schedule,
 }
 
 #[derive(Debug, Error)]
@@ -19,6 +24,12 @@ pub enum ValidationError {
     InvalidSourceAddress(#[from] SourceAddressError),
     #[error(transparent)]
     InvalidJmesPath(#[from] QueryError),
+    #[error("pointer regex is invalid: {0}")]
+    InvalidPointerRegex(regex::Error),
+    #[error("resync schedule must use standard 5-field cron syntax")]
+    InvalidResyncScheduleShape,
+    #[error("resync schedule is invalid: {0}")]
+    InvalidResyncSchedule(String),
     #[error("rules must not be empty")]
     EmptyRules,
     #[error("each rule must declare at least one selector")]
@@ -43,7 +54,14 @@ pub fn validate_spec(spec: &CIDRPolicySpec) -> Result<ValidatedPolicy, Validatio
     }
 
     let source_address = normalize_source_address(&spec.source.address)?;
-    let query = compile_query(&spec.source.jmes_path)?;
+    let pointer_regex = validate_pointer_regex(
+        spec.source
+            .pointer
+            .as_ref()
+            .map(|pointer| pointer.regex.as_str()),
+    )?;
+    compile_query(&spec.source.jmes_path)?;
+    let resync_schedule = validate_resync_schedule(spec.resync_schedule.as_deref())?;
 
     validate_selector(&spec.target.pod_selector)?;
 
@@ -53,7 +71,8 @@ pub fn validate_spec(spec: &CIDRPolicySpec) -> Result<ValidatedPolicy, Validatio
 
     Ok(ValidatedPolicy {
         source_address,
-        query,
+        pointer_regex,
+        resync_schedule,
     })
 }
 
@@ -130,6 +149,29 @@ fn validate_selector_requirement(
     }
 }
 
+pub fn validate_pointer_regex(regex: Option<&str>) -> Result<Option<Regex>, ValidationError> {
+    let Some(regex) = regex else {
+        return Ok(None);
+    };
+
+    Regex::new(regex)
+        .map(Some)
+        .map_err(ValidationError::InvalidPointerRegex)
+}
+
+pub fn validate_resync_schedule(schedule: Option<&str>) -> Result<Schedule, ValidationError> {
+    let schedule = schedule.unwrap_or(DEFAULT_RESYNC_SCHEDULE);
+
+    if schedule.split_whitespace().count() != 5 {
+        return Err(ValidationError::InvalidResyncScheduleShape);
+    }
+
+    let normalized_schedule = format!("0 {schedule}");
+
+    Schedule::from_str(&normalized_schedule)
+        .map_err(|error| ValidationError::InvalidResyncSchedule(error.to_string()))
+}
+
 impl LabelSelectorOperator {
     fn as_str(&self) -> &'static str {
         match self {
@@ -145,8 +187,8 @@ impl LabelSelectorOperator {
 mod tests {
     use super::*;
     use crate::api::{
-        CIDRPolicySpec, LabelSelector, LabelSelectorOperator, LabelSelectorRequirement, RuleSpec,
-        SourceSpec, TargetSpec,
+        CIDRPolicySpec, LabelSelector, LabelSelectorOperator, LabelSelectorRequirement,
+        PointerSpec, RuleSpec, SourceSpec, TargetSpec,
     };
     use std::collections::BTreeMap;
 
@@ -154,8 +196,10 @@ mod tests {
         CIDRPolicySpec {
             source: SourceSpec {
                 address: "example.invalid".to_owned(),
+                pointer: None,
                 jmes_path: "prefixes".to_owned(),
             },
+            resync_schedule: None,
             target: TargetSpec {
                 pod_selector: LabelSelector::default(),
             },
@@ -180,6 +224,8 @@ mod tests {
             validated.source_address.request_url.as_str(),
             "https://example.invalid/"
         );
+        assert!(validated.pointer_regex.is_none());
+        assert_eq!(validated.resync_schedule.to_string(), format!("0 {DEFAULT_RESYNC_SCHEDULE}"));
     }
 
     #[test]
@@ -234,5 +280,45 @@ mod tests {
             err,
             ValidationError::SelectorValuesForbidden(_, "Exists")
         ));
+    }
+
+    #[test]
+    fn invalid_pointer_regex_is_rejected() {
+        let mut spec = base_spec();
+        spec.source.pointer = Some(PointerSpec {
+            regex: "(".to_owned(),
+        });
+
+        let err = validate_spec(&spec).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidPointerRegex(_)));
+    }
+
+    #[test]
+    fn invalid_resync_schedule_shape_is_rejected() {
+        let mut spec = base_spec();
+        spec.resync_schedule = Some("0 0 * * * *".to_owned());
+
+        let err = validate_spec(&spec).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidResyncScheduleShape));
+    }
+
+    #[test]
+    fn invalid_resync_schedule_is_rejected() {
+        let mut spec = base_spec();
+        spec.resync_schedule = Some("0 0 32 * *".to_owned());
+
+        let err = validate_spec(&spec).unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidResyncSchedule(_)));
+    }
+
+    #[test]
+    fn valid_pointer_regex_is_compiled() {
+        let mut spec = base_spec();
+        spec.source.pointer = Some(PointerSpec {
+            regex: "endpoint=(https://[^\"\\s]+)".to_owned(),
+        });
+
+        let validated = validate_spec(&spec).unwrap();
+        assert!(validated.pointer_regex.is_some());
     }
 }

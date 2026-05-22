@@ -1,3 +1,4 @@
 .specman
 .env
 **/target
+.vscode/settings.json

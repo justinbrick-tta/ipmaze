@@ -24,11 +24,11 @@ template_source:
 
 ## Overview
 
-This implementation realizes the Dynamic CIDR NetworkPolicy Controller defined in [Specification - Dynamic CIDR NetworkPolicy Controller](../../spec/ipmaze-controller/spec.md#specification---dynamic-cidr-networkpolicy-controller) as a Kubernetes controller written in modern Rust using kube-rs. The design centers on a typed `CIDRPolicy` custom resource, a reconcile loop that fetches remote JSON, evaluates a JMESPath expression, validates and normalizes CIDRs, and then renders exactly one controller-managed `NetworkPolicy` per custom resource.
+This implementation realizes the Dynamic CIDR NetworkPolicy Controller defined in [Specification - Dynamic CIDR NetworkPolicy Controller](../../spec/ipmaze-controller/spec.md#specification---dynamic-cidr-networkpolicy-controller) as a Kubernetes controller written in modern Rust using kube-rs. The design centers on a typed `CIDRPolicy` custom resource, a reconcile loop that resolves either a direct JSON source or a pointer-discovered JSON source, evaluates a JMESPath expression, validates and normalizes CIDRs, and then renders exactly one controller-managed `NetworkPolicy` per custom resource.
 
 The implementation is constrained by the behavior in [Concept: Remote CIDR Source](../../spec/ipmaze-controller/spec.md#concept-remote-cidr-source), [Concept: CIDR Extraction Query](../../spec/ipmaze-controller/spec.md#concept-cidr-extraction-query), [Concept: Policy Target Selection](../../spec/ipmaze-controller/spec.md#concept-policy-target-selection), [Concept: Policy Direction Configuration](../../spec/ipmaze-controller/spec.md#concept-policy-direction-configuration), [Entity: CIDRPolicy Custom Resource](../../spec/ipmaze-controller/spec.md#entity-cidrpolicy-custom-resource), [Entity: Managed NetworkPolicy](../../spec/ipmaze-controller/spec.md#entity-managed-networkpolicy), and [Entity: Reconciliation Outcome](../../spec/ipmaze-controller/spec.md#entity-reconciliation-outcome). The controller preserves the last known good `NetworkPolicy` on retrieval or parsing failure, removes stale CIDRs on successful updates, and defaults omitted rule directionality to both ingress and egress.
 
-The implementation should generate its CRD from the Rust type definitions and verify that the generated schema stays aligned with [spec/ipmaze-controller/policy.schema.json](../../spec/ipmaze-controller/policy.schema.json). Because Kubernetes CRDs use OpenAPI v3 schema rather than full JSON Schema 2020-12, strict adherence should be enforced with contract tests that compare the generated CRD schema and the repository schema for the overlapping representable constraints. The transport profile is a normative requirement: bare DNS names must be fetched as HTTPS URLs, while bare IP addresses must be fetched as HTTP URLs.
+The implementation should generate its CRD from the Rust type definitions and verify that the generated schema stays aligned with [spec/ipmaze-controller/policy.schema.json](../../spec/ipmaze-controller/policy.schema.json). Because Kubernetes CRDs use OpenAPI v3 schema rather than full JSON Schema 2020-12, strict adherence should be enforced with contract tests that compare the generated CRD schema and the repository schema for the overlapping representable constraints. The transport profile is a normative requirement: bare DNS names must be fetched as HTTPS URLs, while bare IP addresses must be fetched as HTTP URLs. Periodic background reconciliation is driven per resource by `spec.resyncSchedule`, defaulting to UTC `0 0 * * *` when omitted.
 
 ## References
 
@@ -70,7 +70,9 @@ The implementation should use these libraries:
 - `serde`, `serde_json`: JSON decoding for remote payloads and CRD serialization.
 - `schemars`: Schema derivation for the CRD and schema-based contract tests against the repository JSON schema.
 - `reqwest`: Unauthenticated HTTP GET retrieval for remote JSON sources. The client configuration must explicitly avoid credential injection and cookie persistence.
+- `regex`: Pointer response extraction using the first capture group from the first match.
 - `jmespath`: Parsing and evaluating the configured query against the full payload.
+- `cron`: Parsing 5-field cron expressions and deriving the next UTC background resync time.
 - `cidr` or `ipnet`: Strict IPv4 and IPv6 CIDR parsing without coercing host addresses.
 - `thiserror`: Structured reconcile and validation errors.
 - `tracing` and `tracing-subscriber`: Structured controller logs with stage-specific failure metadata.
@@ -84,12 +86,12 @@ If the implementation exposes a CLI for CRD generation, `clap` is appropriate fo
 The controller should be split into narrowly owned modules so each normative stage maps cleanly to code:
 
 - `api`: Rust definitions for `CIDRPolicySpec`, `CIDRPolicyStatus`, `Rule`, `Direction`, and CRD generation glue.
-- `validation`: Pre-reconcile validation for address syntax, JMESPath compilation, selector representability, and direction normalization.
-- `source`: Deterministic remote address resolution, including the requirement that bare DNS names map to HTTPS and bare IP addresses map to HTTP, plus unauthenticated retrieval, content-type agnostic JSON parsing, and transport error classification.
+- `validation`: Pre-reconcile validation for address syntax, pointer regex compilation, JMESPath compilation, selector representability, direction normalization, and 5-field cron parsing.
+- `source`: Deterministic remote address resolution, including the requirement that bare DNS names map to HTTPS and bare IP addresses map to HTTP, optional pointer-response fetch and regex extraction, final JSON retrieval, and stage-specific transport or extraction error classification.
 - `extract`: JMESPath evaluation, array and element type checks, CIDR parsing, deduplication, and stable ordering.
 - `netpol`: Rendering the exact `NetworkPolicy` object shape, ownership metadata, labels or annotations that mark controller management, and diff logic.
 - `status`: Condition or status field calculation, error summarization, and status patch helpers.
-- `controller`: `reconcile`, `error_policy`, event recording, and finalizer or owner-reference behavior.
+- `controller`: `reconcile`, `error_policy`, event recording, per-resource cron requeue calculation, and finalizer or owner-reference behavior.
 - `bin` or `main`: runtime bootstrap, config loading, and metrics or health endpoints if later added.
 
 ### Key Types and Interfaces
@@ -102,8 +104,13 @@ The core Rust-facing interfaces should look like this:
 #[kube(status = "CIDRPolicyStatus")]
 pub struct CIDRPolicySpec {
     pub source: SourceSpec,
+  pub resync_schedule: Option<String>,
     pub target: TargetSpec,
     pub rules: Vec<RuleSpec>,
+}
+
+pub struct PointerSpec {
+  pub regex: String,
 }
 
 pub async fn reconcile(policy: Arc<CIDRPolicy>, ctx: Arc<ContextData>) -> Result<Action, ReconcileError>;
@@ -121,13 +128,15 @@ pub trait PolicyRenderer {
 }
 ```
 
-`CIDRPolicySpec` remains the source of truth for CRD generation. Nested Rust types should use `serde(rename_all = "camelCase")` or explicit `#[serde(rename = "...")]` attributes so fields such as `jmesPath`, `podSelector`, `namespaceSelector`, `lastSuccessfulResolutionTime`, `lastObservedCidrs`, and `lastReconciliationError` match the schema exactly. `RemoteFetcher` and `PolicyRenderer` are useful seams for unit tests. `NormalizedCidr` should be a validated wrapper type so later stages cannot receive invalid strings.
+`CIDRPolicySpec` remains the source of truth for CRD generation. Nested Rust types should use `serde(rename_all = "camelCase")` or explicit `#[serde(rename = "...")]` attributes so fields such as `jmesPath`, `source.pointer.regex`, `resyncSchedule`, `podSelector`, `namespaceSelector`, `lastSuccessfulResolutionTime`, `lastObservedCidrs`, and `lastReconciliationError` match the schema exactly. `RemoteFetcher` and `PolicyRenderer` are useful seams for unit tests. `NormalizedCidr` should be a validated wrapper type so later stages cannot receive invalid strings.
 
 ### Error Handling
 
 Errors should be stage-specific and explicit so operators can distinguish failures required by [Entity: Reconciliation Outcome](../../spec/ipmaze-controller/spec.md#entity-reconciliation-outcome):
 
 - `AddressValidation`: address is neither DNS name, IP literal, nor an accepted URL form.
+- `PointerRetrieval`: pointer endpoint retrieval fails before a final JSON address is resolved.
+- `PointerExtraction`: pointer regex does not match, captures an empty first group, or yields an invalid final address.
 - `Transport`: DNS resolution, TLS, timeout, connection, or non-success HTTP failures.
 - `JsonDecode`: response body is not valid JSON.
 - `JmesPathCompile`: invalid query in the custom resource.
@@ -135,6 +144,7 @@ Errors should be stage-specific and explicit so operators can distinguish failur
 - `ResultShape`: query result is not an array of strings.
 - `CidrValidation`: one or more strings are not valid IPv4 or IPv6 CIDRs.
 - `SelectorTranslation`: selector fields cannot be rendered losslessly into `NetworkPolicy`.
+- `Scheduling`: a validated cron schedule cannot be converted into a future requeue instant.
 - `KubernetesApi`: create, patch, status patch, or event recording failure.
 
 On any post-success failure, the controller must update status and events without deleting or blanking the previously reconciled managed `NetworkPolicy`.
@@ -143,17 +153,19 @@ On any post-success failure, the controller must update status and events withou
 
 The steady-state reconcile flow is:
 
-1. Read the `CIDRPolicy` instance and validate required fields plus parseable JMESPath.
-2. Resolve or normalize the configured source address according to the required deterministic transport profile: bare DNS names map to `https://.../`, bare IP addresses map to `http://.../`, and explicit `http://` or `https://` URLs are preserved.
-3. Perform an unauthenticated HTTP GET with no cookies or auth material.
-4. Parse the body as JSON and fail the reconcile if parsing fails.
-5. Evaluate the JMESPath expression against the full payload.
-6. Assert the result is an array of strings, then parse every entry as an IPv4 or IPv6 CIDR.
-7. Deduplicate while preserving the semantic set, then sort into a deterministic order for stable reconciliation.
-8. Translate subject selectors and peer selectors into typed `NetworkPolicy` selectors.
-9. Render ingress peers, egress peers, or both, based on each rule's directions or the default behavior.
-10. Create or patch the managed `NetworkPolicy` only if the effective spec differs.
-11. Patch status with last success time, last observed CIDRs, and cleared or updated error text.
+1. Read the `CIDRPolicy` instance and validate required fields, pointer regex, parseable JMESPath, and parseable cron schedule.
+2. Resolve or normalize the configured base source address according to the required deterministic transport profile: bare DNS names map to `https://.../`, bare IP addresses map to `http://.../`, and explicit `http://` or `https://` URLs are preserved.
+3. If `source.pointer` is present, perform an unauthenticated HTTP GET against the base address, apply the regex to the full response body, and use the first capture group from the first match as the final JSON address.
+4. Normalize the resolved final address using the same direct-address transport rules.
+5. Perform an unauthenticated HTTP GET with no cookies or auth material against the final JSON address.
+6. Parse the body as JSON and fail the reconcile if parsing fails.
+7. Evaluate the JMESPath expression against the full payload.
+8. Assert the result is an array of strings, then parse every entry as an IPv4 or IPv6 CIDR.
+9. Deduplicate while preserving the semantic set, then sort into a deterministic order for stable reconciliation.
+10. Translate subject selectors and peer selectors into typed `NetworkPolicy` selectors.
+11. Render ingress peers, egress peers, or both, based on each rule's directions or the default behavior.
+12. Create or patch the managed `NetworkPolicy` only if the effective spec differs.
+13. Patch status with last success time, last observed CIDRs, and cleared or updated error text, then compute the next cron-driven background resync.
 
 ### External Integrations
 
@@ -170,7 +182,7 @@ The remote fetch client must not use ambient credentials, injected headers, or c
 
 ### Concept: Remote CIDR Source [Specification Link](../../spec/ipmaze-controller/spec.md#concept-remote-cidr-source)
 
-This concept is realized by `source::RemoteAddress`, `source::ReqwestFetcher`, and validation helpers. The controller must accept exactly one configured address, perform an unauthenticated HTTP GET, refuse to attach credentials, and treat non-JSON payloads as reconcile failures. It must also normalize bare DNS names to HTTPS URLs and bare IP literals to HTTP URLs before retrieval, while preserving explicit HTTP or HTTPS schemes already present in the resource. To preserve safety requirements from [Entity: Reconciliation Outcome](../../spec/ipmaze-controller/spec.md#entity-reconciliation-outcome), fetch failures only update status or events and do not blank an existing managed policy.
+This concept is realized by `source::RemoteAddress`, `source::ResolvedSource`, pointer-resolution helpers, and validation helpers. The controller accepts one configured base address, performs unauthenticated HTTP GET requests, refuses to attach credentials, and treats non-JSON payloads at the final endpoint as reconcile failures. When `source.pointer` is present, the base address may return plain text or HTML, the configured regex is applied to the full response body, and the first capture group from the first match becomes the final JSON address. Both direct and pointer-derived addresses are normalized through the same HTTPS-for-hostname and HTTP-for-IP rules. To preserve safety requirements from [Entity: Reconciliation Outcome](../../spec/ipmaze-controller/spec.md#entity-reconciliation-outcome), pointer or final fetch failures only update status or events and do not blank an existing managed policy.
 
 #### API Signatures
 
@@ -194,7 +206,12 @@ pub async fn fetch_json(
 ```rust
 pub struct SourceSpec {
   pub address: String,
+  pub pointer: Option<PointerSpec>,
   pub jmes_path: String,
+}
+
+pub struct PointerSpec {
+  pub regex: String,
 }
 ```
 
@@ -278,7 +295,7 @@ pub fn effective_directions(rule: &RuleSpec) -> std::collections::BTreeSet<Direc
 
 ### Entity: CIDRPolicy Custom Resource [Specification Link](../../spec/ipmaze-controller/spec.md#entity-cidrpolicy-custom-resource)
 
-This entity is implemented as the `CustomResource` derive input and is the source for both runtime deserialization and CRD generation. The Rust type definitions should mirror the repository schema closely enough that generated CRD YAML and [spec/ipmaze-controller/policy.schema.json](../../spec/ipmaze-controller/policy.schema.json) stay contract-compatible.
+This entity is implemented as the `CustomResource` derive input and is the source for both runtime deserialization and CRD generation. The Rust type definitions mirror the repository schema closely enough that generated CRD YAML and [spec/ipmaze-controller/policy.schema.json](../../spec/ipmaze-controller/policy.schema.json) stay contract-compatible, including the optional `source.pointer.regex` field and optional `resyncSchedule` field.
 
 #### API Signatures
 
@@ -368,6 +385,8 @@ All planned milestones are complete. The staged milestone checklist has been ret
 ## Operational Notes
 
 The controller exposes structured logs for reconcile outcomes and emits Kubernetes events for successful reconciles, cleanup, and failure transitions. Runtime configuration currently includes the requeue interval through the CLI and the event reporting instance through `CONTROLLER_POD_NAME`. HTTP timeout and optional CA bundle configuration remain reasonable future runtime extensions, but authentication settings must stay absent because the specification forbids sending credential material.
+
+For cron parsing, the implementation accepts standard 5-field expressions at the API boundary and normalizes them internally for the Rust `cron` crate, which expects a seconds-prefixed schedule representation. Background resync remains additive to watch-driven reconciles rather than replacing create or update event handling.
 
 The implementation should also provide a repeatable CRD generation command, for example `cargo run --bin ipmaze-controller -- generate-crd > config/crd/cidrpolicies.ipmaze.k8s.justin.directory.yaml`, and CI should fail if the checked-in CRD differs from generated output.
 

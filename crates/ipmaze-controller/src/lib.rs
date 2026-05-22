@@ -8,9 +8,11 @@ pub mod validation;
 
 pub use api::{
     CIDRPolicy, CIDRPolicySpec, CIDRPolicyStatus, Direction, LabelSelector, LabelSelectorOperator,
-    LabelSelectorRequirement, RuleSpec, SourceSpec, StringMap, TargetSpec,
+    LabelSelectorRequirement, PointerSpec, RuleSpec, SourceSpec, StringMap, TargetSpec,
 };
-pub use controller::{run_controller, ControllerConfig, ControllerContext, ReconcileError};
+pub use controller::{
+    next_resync_after, run_controller, ControllerConfig, ControllerContext, ReconcileError,
+};
 pub use extract::{
     compile_query, extract_cidrs, ExtractionError, IpFamily, NormalizedCidr, QueryError,
 };
@@ -19,11 +21,14 @@ pub use netpol::{
     render_peer_selector, render_subject_selector, RenderError,
 };
 pub use source::{
-    build_http_client, fetch_json, normalize_source_address, FetchError, NormalizedRemoteAddress,
-    RemoteAddress, SourceAddressError,
+    build_http_client, fetch_json, fetch_text, normalize_source_address, resolve_final_source,
+    FetchError, NormalizedRemoteAddress, RemoteAddress, ResolvedSource, SourceAddressError,
 };
 pub use status::{patch_status_for_outcome, status_for_outcome, ReconcileOutcome, ReconcileStage};
-pub use validation::{validate_policy, validate_spec, ValidatedPolicy, ValidationError};
+pub use validation::{
+    validate_policy, validate_pointer_regex, validate_resync_schedule, validate_spec,
+    ValidatedPolicy, ValidationError, DEFAULT_RESYNC_SCHEDULE,
+};
 
 use kube::core::CustomResourceExt;
 
