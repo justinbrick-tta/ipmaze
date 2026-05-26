@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ipmaze-controller.fullname" . }}
+  namespace: {{ include "ipmaze-controller.targetNamespace" . }}
+  labels:
+    {{- include "ipmaze-controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ipmaze-controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ipmaze-controller.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ipmaze-controller.serviceAccountName" . }}
+      containers:
+        - name: controller
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - run
+            - --requeue-seconds
+            - {{ .Values.controller.requeueSeconds | quote }}
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.controller.logLevel | quote }}
+            - name: CONTROLLER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

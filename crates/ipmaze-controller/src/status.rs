@@ -9,6 +9,7 @@ const STATUS_FIELD_MANAGER: &str = "ipmaze-controller-status";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconcileStage {
     Validation,
+    ManagedPolicyCollision,
     PointerRetrieval,
     PointerExtraction,
     Transport,
@@ -40,6 +41,7 @@ impl ReconcileStage {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Validation => "validation",
+            Self::ManagedPolicyCollision => "managed-policy-collision",
             Self::PointerRetrieval => "pointer-retrieval",
             Self::PointerExtraction => "pointer-extraction",
             Self::Transport => "transport",

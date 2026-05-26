@@ -1,0 +1,141 @@
+name: Smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  kustomize:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up kind
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: kind
+
+      - name: Build smoke image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/ipmaze-controller:smoke
+        run: docker build --tag "${IMAGE,,}" .
+
+      - name: Load smoke image into kind
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/ipmaze-controller:smoke
+        run: kind load docker-image --name kind "${IMAGE,,}"
+
+      - name: Install via Kustomize overlay
+        env:
+          IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/ipmaze-controller
+        run: |
+          mkdir -p .tmp/smoke-kustomize
+          cat > .tmp/smoke-kustomize/kustomization.yaml <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          namespace: ipmaze-kustomize-smoke
+          resources:
+            - ../../config
+          images:
+            - name: ghcr.io/justinbrick-tta/ipmaze-controller
+              newName: ${IMAGE_REPO,,}
+              newTag: smoke
+          EOF
+          kubectl apply -k .tmp/smoke-kustomize
+          kubectl rollout status deployment/ipmaze-controller -n ipmaze-kustomize-smoke --timeout=180s
+
+      - name: Upgrade via Kustomize overlay
+        env:
+          IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/ipmaze-controller
+        run: |
+          cat > .tmp/smoke-kustomize/kustomization.yaml <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          namespace: ipmaze-kustomize-smoke
+          resources:
+            - ../../config
+          images:
+            - name: ghcr.io/justinbrick-tta/ipmaze-controller
+              newName: ${IMAGE_REPO,,}
+              newTag: smoke
+          patches:
+            - target:
+                kind: Deployment
+                name: ipmaze-controller
+              patch: |-
+                - op: replace
+                  path: /spec/template/spec/containers/0/args/2
+                  value: "301"
+          EOF
+          kubectl apply -k .tmp/smoke-kustomize
+          kubectl rollout status deployment/ipmaze-controller -n ipmaze-kustomize-smoke --timeout=180s
+          test "$(kubectl get deployment ipmaze-controller -n ipmaze-kustomize-smoke -o jsonpath='{.spec.template.spec.containers[0].args[2]}')" = "301"
+
+      - name: Uninstall Kustomize deployment
+        run: |
+          kubectl delete -k .tmp/smoke-kustomize --ignore-not-found
+          kubectl wait --for=delete deployment/ipmaze-controller -n ipmaze-kustomize-smoke --timeout=180s || true
+          kubectl delete namespace ipmaze-kustomize-smoke --ignore-not-found
+
+  helm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Set up kind
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: kind
+
+      - name: Build smoke image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/ipmaze-controller:smoke
+        run: docker build --tag "${IMAGE,,}" .
+
+      - name: Load smoke image into kind
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/ipmaze-controller:smoke
+        run: kind load docker-image --name kind "${IMAGE,,}"
+
+      - name: Install via Helm
+        env:
+          IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/ipmaze-controller
+        run: |
+          helm upgrade --install ipmaze-controller charts/ipmaze-controller \
+            --namespace ipmaze-helm-smoke \
+            --create-namespace \
+            --wait \
+            --set image.repository="${IMAGE_REPO,,}" \
+            --set image.tag=smoke
+          kubectl rollout status deployment/ipmaze-controller -n ipmaze-helm-smoke --timeout=180s
+
+      - name: Upgrade via Helm
+        env:
+          IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/ipmaze-controller
+        run: |
+          helm upgrade ipmaze-controller charts/ipmaze-controller \
+            --namespace ipmaze-helm-smoke \
+            --wait \
+            --set image.repository="${IMAGE_REPO,,}" \
+            --set image.tag=smoke \
+            --set controller.requeueSeconds=301
+          test "$(kubectl get deployment ipmaze-controller -n ipmaze-helm-smoke -o jsonpath='{.spec.template.spec.containers[0].args[2]}')" = "301"
+
+      - name: Uninstall Helm release
+        run: |
+          helm uninstall ipmaze-controller --namespace ipmaze-helm-smoke
+          kubectl wait --for=delete deployment/ipmaze-controller -n ipmaze-helm-smoke --timeout=180s || true
+          kubectl delete namespace ipmaze-helm-smoke --ignore-not-found

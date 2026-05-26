@@ -1,0 +1,31 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/justinbrick-tta/ipmaze-controller
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+namespace:
+  name: ""
+  create: true
+  labels: {}
+  annotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+
+controller:
+  requeueSeconds: 300
+  logLevel: info,ipmaze_controller=debug
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

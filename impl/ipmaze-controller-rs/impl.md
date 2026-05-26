@@ -178,6 +178,34 @@ The implementation integrates with:
 
 The remote fetch client must not use ambient credentials, injected headers, or cookie jars. For source normalization, the implementation must treat bare DNS names as HTTPS targets and bare IP literals as HTTP targets to satisfy [Concept: Remote CIDR Source](../../spec/ipmaze-controller/spec.md#concept-remote-cidr-source).
 
+## Deployment Packaging
+
+The controller is distributed through repository-native Kustomize manifests and a Helm chart. A standalone generated `install.yaml` bundle is intentionally not part of the supported surface. The Kustomize entrypoint lives at `config/kustomization.yaml` and composes the CRD plus controller resources. The controller-specific Kustomize package under `config/controller/` owns the namespace, RBAC, deployment, and default image substitution. The Helm chart lives under `charts/ipmaze-controller/` and renders semantically equivalent controller resources with parameterized image, namespace, and runtime settings.
+
+### Kustomize Distribution
+
+`kubectl apply -k config` is the supported manifest-first installation path. The repository root `config/` Kustomization includes both the CRD and controller package so a fresh install renders the full resource set. `config/controller/kustomization.yaml` keeps `deployment.yaml` free of a hard-coded published image by replacing `REPLACE_IMAGE` with the default GHCR image reference during Kustomize rendering. This keeps the checked-in deployment manifest close to the controller runtime while making the install path directly usable.
+
+### Helm Distribution
+
+The Helm chart mirrors the controller deployment shape from `config/controller/` rather than introducing a separate operational model. The chart exposes values for image repository, image tag, pull policy, reconcile interval, log level, resource requests and limits, service account reuse, and target namespace selection. The `CIDRPolicy` CRD is sourced from `config/crd/` through the chart `crds/` directory so Helm installs the CRD before the controller resources and the repository keeps one authoritative CRD file.
+
+### Container Image Build and Registry Publication
+
+The repository `Dockerfile` builds the `ipmaze-controller` binary in a Rust builder stage and copies it into a minimal Debian runtime image with CA certificates. Release publication targets GHCR with the repository image name `ghcr.io/justinbrick-tta/ipmaze-controller`. Release automation is expected to publish a multi-architecture manifest for `linux/amd64` and `linux/arm64`, along with immutable release tags and moving compatibility tags such as the corresponding major-minor tag and `latest`.
+
+### Namespace and Cluster Resource Layout
+
+The controller runs in a dedicated namespace, `ipmaze-system`, by default. The Kustomize package includes an explicit `Namespace` object for clean installs. The Helm chart defaults to the Helm release namespace and can optionally render a `Namespace` object plus override the target namespace through values. Cluster-scoped permissions remain necessary because the controller watches `CIDRPolicy` resources and managed `NetworkPolicy` objects across namespaces.
+
+### CI and Release Automation
+
+CI is responsible for keeping the packaging surfaces executable, not just syntactically present. In addition to Rust formatting, lint, test, and CRD drift checks, the repository CI workflow should render the Kustomize install path, lint and template the Helm chart including CRDs, and smoke-test the multi-platform image build. Tag-driven release automation publishes the multi-arch container image to GHCR and packages then pushes the Helm chart as an OCI artifact to GHCR.
+
+### Operational Installation and Upgrade Notes
+
+Kustomize is the lowest-friction path for users who want repository-native manifests with a fixed default image location. Helm is the supported path for parameterized installs and upgrades. Both surfaces must stay semantically aligned with the deployment manifest and CRD checked into the repository. Any future deployment knobs added to the raw manifest should be reflected in the Helm values surface and validated through the same packaging checks so install drift is caught before release.
+
 ## Concept & Entity Breakdown
 
 ### Concept: Remote CIDR Source [Specification Link](../../spec/ipmaze-controller/spec.md#concept-remote-cidr-source)

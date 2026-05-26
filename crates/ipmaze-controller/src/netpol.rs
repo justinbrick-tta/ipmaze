@@ -91,6 +91,30 @@ pub fn build_managed_network_policy(
     })
 }
 
+pub fn is_managed_network_policy_for(policy: &CIDRPolicy, network_policy: &NetworkPolicy) -> bool {
+    let labels_match = network_policy
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(MANAGED_BY_LABEL))
+        .is_some_and(|value| value == MANAGED_BY_VALUE);
+    let annotation_matches = network_policy
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.get(SOURCE_POLICY_ANNOTATION))
+        .is_some_and(|value| value == &policy.name_any());
+    let owner_matches = policy.controller_owner_ref(&()).is_some_and(|owner| {
+        network_policy
+            .metadata
+            .owner_references
+            .as_ref()
+            .is_some_and(|owners| owners.iter().any(|candidate| candidate == &owner))
+    });
+
+    labels_match && annotation_matches && owner_matches
+}
+
 pub async fn apply_managed_network_policy(
     api: &Api<NetworkPolicy>,
     network_policy: &NetworkPolicy,
@@ -473,5 +497,24 @@ mod tests {
             Some(&"office-allowlist".to_owned())
         );
         assert_eq!(rendered.metadata.owner_references.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ownership_check_rejects_foreign_network_policy() {
+        let policy = policy_with_rule(RuleSpec {
+            directions: Some(vec![Direction::Ingress]),
+            pod_selector: Some(LabelSelector {
+                match_labels: Some(StringMap::from([(
+                    "access-tier".to_owned(),
+                    "trusted".to_owned(),
+                )])),
+                match_expressions: None,
+            }),
+            namespace_selector: None,
+        });
+        let mut rendered = build_managed_network_policy(&policy, &sample_cidrs()).unwrap();
+        rendered.metadata.annotations = Some(BTreeMap::new());
+
+        assert!(!is_managed_network_policy_for(&policy, &rendered));
     }
 }
